@@ -25,10 +25,14 @@ class EventDraft(models.Model):
     """
     STEP_CHOICES = [
         ("title", "タイトル入力待ち"),
-        ("start", "開始日時入力待ち"),
-        ("end",   "終了日時入力待ち"),
-        ("cap",   "定員入力待ち"),
-        ("done",  "完了"),
+        ("start_date", "開始日入力待ち"),
+        ("start_time", "開始時刻入力待ち"),
+        ("end_mode",   "終了指定方法の選択待ち"),  # 「終了日時」か「所要時間」か
+        ("end_date",   "終了日入力待ち"),
+        ("end_time",   "終了時刻入力待ち"),
+        ("duration",   "所要時間入力待ち"),
+        ("cap",        "定員入力待ち"),
+        ("done",       "完了"),
     ]
     user_id = models.CharField(max_length=50, unique=True)  # ユーザーごとに1件の下書き
     step = models.CharField(max_length=10, choices=STEP_CHOICES, default="title")
