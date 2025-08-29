@@ -1,0 +1,38 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Coverage / test reports
+.coverage
+htmlcov/
+.pytest_cache/
+
+# .env
+.env
+
+# Memo
+memo.md
+
+# VScode workspace
+line_eventbot.code-workspace
