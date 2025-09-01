@@ -8,21 +8,24 @@ from linebot.models import (
 )
 
 
-# ---- QuickReplyユーティリティ（任意）----
+# ---- QuickReplyユーティリティ ----
 def make_quick_reply(show_back: bool = False, show_reset: bool = False):
     """
-    「戻る」「やり直す」のQuickReplyを必要に応じて生成して返す。
-    - show_back: 戻るボタンを付けるか（Postback data='back'）
-    - show_reset: やり直すボタンを付けるか（Postback data='reset'）
+    役割: Quick Reply のボタンを必要に応じて生成する。
+    - show_back=True で「戻る」(data='back')
+    - show_reset=True で「はじめからやり直す」(data='reset')
+    どちらも False の場合は None を返す（＝Quick Reply 非表示）
     """
     items = []
     if show_back:
-        items.append(QuickReplyButton(action=PostbackAction(label="戻る", data="back")))
+        items.append(
+            QuickReplyButton(action=PostbackAction(label="戻る", data="back"))
+        )
     if show_reset:
-        items.append(QuickReplyButton(action=PostbackAction(label="やり直す", data="reset")))
-    if not items:
-        return None
-    return QuickReply(items=items)
+        items.append(
+            QuickReplyButton(action=PostbackAction(label="はじめからやり直す", data="reset"))
+        )
+    return QuickReply(items=items) if items else None
 
 # ---- ButtonsTemplateの薄いラッパ（alt_text統一やQR付与を簡便化）----
 def build_buttons(text: str, actions, alt_text: str = "選択メニュー", title: str | None = None,
@@ -52,14 +55,23 @@ def ask_date_picker(prompt_text: str, data: str, min_dt=None, max_dt=None,
         kwargs["min"] = _fmt_line_date(min_dt)
     if max_dt:
         kwargs["max"] = _fmt_line_date(max_dt)
+        
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
-    return build_buttons(
-        text=prompt_text,
-        actions=[DatetimePickerAction(**kwargs)],
-        alt_text="日付選択",
-        title=None,
+    return TemplateSendMessage(
+        alt_text="日付を選ぶ",
+        template=ButtonsTemplate(
+            text=prompt_text,
+            actions=[DatetimePickerAction(**kwargs)]
+        ),
         quick_reply=qr
-    )
+    )   
+    # return build_buttons(
+    #     text=prompt_text,
+    #     actions=[DatetimePickerAction(**kwargs)],
+    #     alt_text="日付選択",
+    #     title=None,
+    #     quick_reply=qr
+    # )
 
 # ---- 時刻入力メニュー（候補＋スキップ誘導）----
 def ask_time_menu(prompt_text: str, prefix: str,
@@ -95,7 +107,7 @@ def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False):
     ]
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     return build_buttons(
-        text="イベント終了日時はどうやって入力する？",
+        text="イベント終了時刻はどうやって入力する？",
         actions=acts,
         alt_text="終了の指定方法",
         title=None,
@@ -112,11 +124,11 @@ def ask_duration_menu(with_back: bool = False, with_reset: bool = False):
         PostbackAction(label="30分", data="dur=30m"),
         PostbackAction(label="60分", data="dur=60m"),
         PostbackAction(label="1時間30分", data="dur=90m"),
-        PostbackAction(label="自由入力", data="dur=input"),
+        # PostbackAction(label="自由入力", data="dur=input"),
     ]
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     return build_buttons(
-        text="所要時間を選ぶか入力してね。\n例: 15分→【15】/ 1時間30分→【1:30】/ 2時間→【2h】",
+        text="所要時間を入力するか、下から選んでね。\n例: 15分→【15】/ 1時間30分→【1:30】/ 2時間→【2h】",
         actions=acts,
         alt_text="所要時間の入力",
         title=None,
