@@ -7,28 +7,30 @@ from django.core.exceptions import ImproperlyConfigured
 from django.conf import settings
 from django.utils.dateparse import parse_datetime
 from django.utils import timezone
+from datetime import timedelta
 
-from .models import Event, Participant, EventDraft
+from .models import Event, EventDraft  # Participantを後で追加
 
 from linebot import LineBotApi, WebhookParser
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
-    PostbackEvent, TemplateSendMessage, ButtonsTemplate,
-    DatetimePickerAction, QuickReply, QuickReplyButton,
-    TemplateSendMessage, ButtonsTemplate, PostbackAction
+    PostbackEvent, ButtonsTemplate,
+    DatetimePickerAction, TemplateSendMessage, PostbackAction
 )
 from linebot.exceptions import InvalidSignatureError
 
 
+
 """
 【動作フロー】
-1.「イベント作成」→ タイトル入力
-2. 開始日時ピッカー（日時）
-3.「終了の指定方法」メニュー
-    1) 終了日時を入力 → 終了日時ピッカー（開始日時を initial/min に設定：開始以前は選べない）
-    2) 所要時間を入力 → 30分/1h/90分/2h/自由入力（自由入力は 1:30 / 90m / 2h / 120）
-4. 定員設定（スキップ or 数字入力）
-5. 確定
+1.「イベント作成」と入力
+2. タイトル入力
+3. 開始日時：日付ピッカー → 時刻入力/選択
+4.「終了の指定方法」メニュー
+    1) 終了時刻入力/選択　※終了日=開始日
+    2) 所要時間を入力/選択
+5. 定員設定（数字入力 or スキップ）
+6. イベント作成完了
 """
 
 def get_line_clients():
@@ -121,7 +123,8 @@ def callback(request):   # LINEプラットフォームからのWebhookエンド
 
 def handle_wizard_text(user_id: str, text: str):
     """
-    タイトル、定員、（自由入力の所要時間）を処理する。
+    【ユーザーのテキスト入力データを処理】
+    → タイトル、時刻の手入力、所要時間の手入力、定員
     """
     try:
         draft = EventDraft.objects.get(user_id=user_id)
@@ -135,7 +138,7 @@ def handle_wizard_text(user_id: str, text: str):
         draft.name = text
         draft.step = "start_date"
         draft.save()
-        return ask_date_picker("イベントの開始日時を選んでね", data="pick=start_date")
+        return ask_date_picker("イベントの開始日を教えてね", data="pick=start_date")
 
     # 時刻の「自由入力」: start_time フェーズ
     if draft.step == "start_time":
@@ -160,18 +163,8 @@ def handle_wizard_text(user_id: str, text: str):
         draft.end_time = tmp
         draft.step = "cap"
         draft.save()
-        return TemplateSendMessage(
-            alt_text="定員の設定",
-            template=ButtonsTemplate(
-                # title="定員",
-                text="定員を設定する場合は数字で入力してね",
-                actions=[
-                    PostbackAction(label="設定しない（スキップ）", data="cap=skip"),
-                ],
-            ),
-        )
+        return ask_capacity_menu()
 
-    # handle_wizard_text の末尾あたりに追加
     if draft.step == "duration":
         delta = parse_duration_to_delta(text)
         if not delta or delta.total_seconds() <= 0:
@@ -183,24 +176,13 @@ def handle_wizard_text(user_id: str, text: str):
         draft.end_time = draft.start_time + delta
         draft.step = "cap"
         draft.save()
-        return TemplateSendMessage(
-            alt_text="定員の設定",
-            template=ButtonsTemplate(
-                title="定員",
-                text="定員を設定する？",
-                actions=[
-                    PostbackAction(label="設定しない（スキップ）", data="cap=skip"),
-                    PostbackAction(label="定員を数字で入力する", data="cap=input"),
-                ],
-            ),
-        )
+        return ask_capacity_menu()
 
-
-    # 定員の数値入力（既存）
+    # 定員の数値入力
     if draft.step == "cap":
         capacity = parse_int_safe(text)
         if capacity is None or capacity <= 0:
-            return TextSendMessage(text="定員は1以上の整数を入力してね。定員なしにするなら「スキップ」を選んで。")
+            return TextSendMessage(text="定員は1以上の整数を入力してね。定員なしにするなら「スキップ」を選んでね")
         draft.capacity = capacity
         draft.step = "done"
         draft.save()
@@ -211,10 +193,10 @@ def handle_wizard_text(user_id: str, text: str):
 
 def handle_wizard_postback(user_id: str, data: str, params: dict):
     """
-    日付/時刻ピッカーや定員メニューのPostbackを処理。
-    - pick=start_date / end_date … 日付の決定（カレンダー）
-    - time=start / time=end      … 時刻候補の決定 or スキップ
-    - cap=skip / cap=input       … 既存の定員分岐
+    【ユーザーのPostbackデータを処理】
+    → 日付ピッカー、時刻・所要時間を候補ボタンから選択、定員スキップ
+    
+    ※Postback：ボタンテンプレートや日時ピッカーを押したときに返ってくる「隠しデータ」
     """
 
     try:
@@ -233,17 +215,17 @@ def handle_wizard_postback(user_id: str, data: str, params: dict):
         draft.start_time = d0  # 00:00
         draft.step = "start_time"
         draft.save()
-        return ask_time_menu("開始時刻を【HH:MM】の形で入力してね", prefix="start")
+        return ask_time_menu("開始時刻を【HH:MM】の形で入力するか、下から選んでね", prefix="start")
 
-    # --- 終了日 選択 ---
-    if data == "pick=end_date" and draft.step == "end_date":
-        d0 = extract_dt_from_params_date_only(params)
-        if not d0:
-            return TextSendMessage(text="終了日が取得できなかったよ。もう一度選んでね")
-        draft.end_time = d0  # 00:00
-        draft.step = "end_time"
-        draft.save()
-        return ask_time_menu("終了時刻を【HH:MM】の形で入力してね", prefix="end")
+    # --- 終了日 選択 ---　※開始日と異なる終了日の設定を許可する場合には回復
+    # if data == "pick=end_date" and draft.step == "end_date":
+    #     d0 = extract_dt_from_params_date_only(params)
+    #     if not d0:
+    #         return TextSendMessage(text="終了日が取得できなかったよ。もう一度選んでね")
+    #     draft.end_time = d0  # 00:00
+    #     draft.step = "end_time"
+    #     draft.save()
+    #     return ask_time_menu("終了時刻を【HH:MM】の形で入力するか、下から選んでね", prefix="end")
 
     # --- 時刻（候補 or スキップ）選択 ---
     if data.startswith("time="):
@@ -272,39 +254,25 @@ def handle_wizard_postback(user_id: str, data: str, params: dict):
             draft.end_time = new_dt
             draft.step = "cap"
             draft.save()
-            return TemplateSendMessage(
-                alt_text="定員の設定",
-                template=ButtonsTemplate(
-                    title="定員",
-                    text="定員を設定する？",
-                    actions=[
-                        PostbackAction(label="設定しない（スキップ）", data="cap=skip"),
-                        PostbackAction(label="定員を数字で入力する", data="cap=input"),
-                    ],
-                ),
-            )
+            return ask_capacity_menu()
 
-    # 終了の指定方法：終了日時を入力
-    if data == "endmode=enddt" and draft.step == "end_mode":
-        draft.step = "end_date"
+    # 終了の指定方法：終了時刻を入力
+    if data == "endmode=enddt": 
+        # 終了日を開始日と同じ日に自動設定
+        draft.end_time = draft.start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+        draft.step = "end_time"
         draft.save()
-        return ask_date_picker(
-            "イベントの終了日を選んでね",
-            data="pick=end_date",
-            min_dt=draft.start_time
-        )
+        return ask_time_menu("終了時刻を【HH:MM】の形で入力するか、下から選んでね", prefix="end")
 
     # 終了の指定方法：所要時間を入力
-    if data == "endmode=duration" and draft.step == "end_mode":
+    if data == "endmode=duration":
         draft.step = "duration"
         draft.save()
         return ask_duration_menu()
 
-    # プリセット（dur=...）
+    # 所要時間のプリセットボタンを押したときの処理
     if data.startswith("dur=") and draft.step == "duration":
         code = data.split("=", 1)[1]
-        if code == "input":
-            return TextSendMessage(text="所要時間を入力してね。例: 1:30 / 90m / 2h / 120")
         delta = parse_duration_to_delta(code)
         if not delta or delta.total_seconds() <= 0:
             return TextSendMessage(text="所要時間の形式が不正だよ。もう一度選んでね")
@@ -337,83 +305,17 @@ def handle_wizard_postback(user_id: str, data: str, params: dict):
     return None
 
 
-# ===== 補助関数群 =====
+
+# ===== ヘルパー / ユーティリティ =====
 
 def fmt_line_date(dt):
     """
-    'YYYY-MM-DD' 形式に整形する（DatetimePicker mode='date' 用）
+    LINEのDatetimePicker(mode='date')向けに 'YYYY-MM-DD' へ整形する。
     """
     local = timezone.localtime(dt, timezone.get_current_timezone())
     return local.strftime("%Y-%m-%d")
 
 
-def fmt_line_datetime(dt):
-    """
-    'YYYY-MM-DDTHH:MM' 形式に整形する（LINEのinitial/min/maxに渡す）
-    """
-    # dtはtimezone-awareを想定
-    local = timezone.localtime(dt, timezone.get_current_timezone())
-    return local.strftime("%Y-%m-%dT%H:%M")
-
-
-# --- 日付ピッカー ---
-def ask_date_picker(prompt_text: str, data: str, min_dt=None, max_dt=None):
-    """
-    日付のみをカレンダーで選ばせるテンプレートを返す。
-    min_dt / max_dt があれば開始日などの制約を付ける。
-    """
-    kwargs = {"label": "日付を選ぶ", "data": data, "mode": "date"}
-    if min_dt:
-        kwargs["min"] = fmt_line_date(min_dt)
-    if max_dt:
-        kwargs["max"] = fmt_line_date(max_dt)
-
-    template = ButtonsTemplate(
-        # title="日付選択",
-        text=prompt_text,
-        actions=[DatetimePickerAction(**kwargs)]
-    )
-    return TemplateSendMessage(alt_text="日付選択", template=template)
-
-
-# --- 時刻入力の「候補ボタン＋自由入力＋スキップ」メニュー ---
-def ask_time_menu(prompt_text: str, prefix: str):
-    """
-    時刻を候補ボタン or 自由入力 or スキップで受ける。
-    prefix は 'start' or 'end' を想定し、Postback data に使う。
-    """
-    actions = [
-        PostbackAction(label="09:00", data=f"time={prefix}&v=09:00"),
-        PostbackAction(label="10:00", data=f"time={prefix}&v=10:00"),
-        PostbackAction(label="19:00", data=f"time={prefix}&v=19:00"),
-        PostbackAction(label="スキップ", data=f"time={prefix}&v=__skip__"),
-    ]
-    return TemplateSendMessage(
-        alt_text="時刻入力",
-        template=ButtonsTemplate(
-            # title="開始時刻入力（任意）",
-            text=prompt_text,
-            actions=actions
-        )
-    )
-
-
-# --- 'YYYY-MM-DD' + 'HH:MM' から aware datetime を作る ---
-def combine_date_time(date_dt, hhmm: str | None, is_end: bool = False):
-    """
-    date_dt（日付のみの aware datetime 00:00）に時刻を合成。
-    hhmm が None の場合は 00:00（開始）/ 23:59（終了）を補完。
-    """
-    if hhmm in (None, "__skip__"):
-        h, m = (23, 59) if is_end else (0, 0)
-    else:
-        ok, (h, m) = parse_hhmm(hhmm)
-        if not ok:
-            return None
-    return date_dt.replace(hour=h, minute=m, second=0, microsecond=0)
-
-
-# --- 'HH:MM' 形式のバリデーション ---
 def parse_hhmm(s: str):
     """
     'HH:MM' を検証して (ok, (H, M)) を返す。
@@ -425,10 +327,44 @@ def parse_hhmm(s: str):
     return True, (int(m.group(1)), int(m.group(2)))
 
 
-# --- DatetimePicker の戻りで 'date' も拾えるように ---
+def parse_duration_to_delta(s: str):
+    """
+    所要時間文字列を timedelta に変換する。
+    受理形式: 'H:MM' / '90m' / '2h' / '120'(分)
+    """
+    s = (s or "").strip().lower()
+    m = re.fullmatch(r"(\d{1,2}):([0-5]\d)", s)
+    if m:
+        h, mm = int(m.group(1)), int(m.group(2))
+        return timedelta(minutes=h*60 + mm)
+    m = re.fullmatch(r"(\d{1,4})m", s)
+    if m:
+        return timedelta(minutes=int(m.group(1)))
+    m = re.fullmatch(r"(\d{1,3})h", s)
+    if m:
+        return timedelta(hours=int(m.group(1)))
+    if re.fullmatch(r"\d{1,4}", s):
+        return timedelta(minutes=int(s))
+    return None
+
+
+def parse_int_safe(s: str):
+    """
+    数字のみの文字列を int に変換する。数字以外を含めば None。
+    """
+    s = (s or "").strip()
+    if not re.fullmatch(r"\d+", s):
+        return None
+    try:
+        return int(s)
+    except Exception:
+        return None
+
+
 def extract_dt_from_params_date_only(params: dict):
     """
-    DatetimePickerAction(mode='date') の Postback params から date を取り出し、00:00 の aware datetime にして返す。
+    DatetimePicker(mode='date') の params から 'date' を取り出し、
+    その日の 00:00 の aware datetime を返す。
     例: params = {'date': '2025-09-01'}
     """
     d = params.get("date")
@@ -442,56 +378,82 @@ def extract_dt_from_params_date_only(params: dict):
     return dt
 
 
-def ask_datetime_picker(prompt_text: str, data: str, initial_dt=None, min_dt=None, max_dt=None):
+def combine_date_time(date_dt, hhmm: str | None, is_end: bool = False):
+    """
+    日付のみ(00:00)の aware datetime に時刻を合成する。
+    hhmm が None/ '__skip__' の場合、開始=00:00 / 終了=23:59 を補完する。
+    """
+    if hhmm in (None, "__skip__"):
+        h, m = (23, 59) if is_end else (0, 0)
+    else:
+        ok, (h, m) = parse_hhmm(hhmm)
+        if not ok:
+            return None
+    return date_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+
+
+# ===== メニュー生成 =====
+
+def ask_date_picker(prompt_text: str, data: str, min_dt=None, max_dt=None):
     """
     日付のみをカレンダーで選ばせるテンプレートを返す。
-    data は 'pick=start_date' / 'pick=end_date' など識別用。
+    min_dt / max_dt を与えると選択範囲を制約できる。
     """
-    kwargs = {"label": "日時を選ぶ", "data": data, "mode": "datetime"}
-    if initial_dt is not None:
-        kwargs["initial"] = fmt_line_datetime(initial_dt)
-    if min_dt is not None:
-        kwargs["min"] = fmt_line_datetime(min_dt)
-    if max_dt is not None:
-        kwargs["max"] = fmt_line_datetime(max_dt)
+    kwargs = {"label": "日付を選ぶ", "data": data, "mode": "date"}
+    if min_dt:
+        kwargs["min"] = fmt_line_date(min_dt)
+    if max_dt:
+        kwargs["max"] = fmt_line_date(max_dt)
 
-    template = ButtonsTemplate(     # ボタンテンプレートを構築
-        title="日時選択",
+    template = ButtonsTemplate(
         text=prompt_text,
-        actions=[
-            DatetimePickerAction(
-                label="日付を選ぶ",     # ボタンに表示するラベル
-                data=data,             # 戻りのPostbackに含める識別子
-                mode="date"            # 日付のみ選ばせる
-            )
-        ]
+        actions=[DatetimePickerAction(**kwargs)]
     )
-    # ユーザーへ送れるテンプレートメッセージに包んで返す
     return TemplateSendMessage(alt_text="日付選択", template=template)
 
 
-# 役割: 終了の指定方法（終了日時 or 所要時間）を選ばせる
+def ask_time_menu(prompt_text: str, prefix: str):
+    """
+    時刻候補（09:00/10:00/19:00）とスキップを提示する。
+    prefix は 'start' / 'end' で、Postback data に埋め込む。
+    """
+    actions = [
+        PostbackAction(label="09:00", data=f"time={prefix}&v=09:00"),
+        PostbackAction(label="10:00", data=f"time={prefix}&v=10:00"),
+        PostbackAction(label="19:00", data=f"time={prefix}&v=19:00"),
+        PostbackAction(label="スキップ", data=f"time={prefix}&v=__skip__"),
+    ]
+    return TemplateSendMessage(
+        alt_text="時刻入力",
+        template=ButtonsTemplate(text=prompt_text, actions=actions)
+    )
+
+
 def ask_end_mode_menu():
+    """
+    終了の指定方法（終了時刻入力 / 所要時間入力）を選ばせる。
+    """
     return TemplateSendMessage(
         alt_text="終了の指定方法",
         template=ButtonsTemplate(
-            # title="終了の指定方法",
-            text="どちらか選んでね",
+            text="終了時刻を教えてね",
             actions=[
-                PostbackAction(label="終了日時を入力", data="endmode=enddt"),
+                PostbackAction(label="終了時刻を入力", data="endmode=enddt"),
                 PostbackAction(label="所要時間を入力", data="endmode=duration"),
             ],
         ),
     )
 
 
-# 役割: 所要時間のプリセット＋自由入力ガイダンス
 def ask_duration_menu():
+    """
+    所要時間のプリセットを提示する（自由入力はメッセージで受ける運用）。
+    """
     return TemplateSendMessage(
         alt_text="所要時間の入力",
         template=ButtonsTemplate(
-            # title="所要時間",
-            text="所要時間を選ぶか入力してね。\n例: 15分→【15】/ 1時間30分→【1:30】/ 2時間→【2h】",
+            text="所要時間を入力するか、下から選んでね。\n"
+                 "入力例: 15 / 1:10 / 2h / 90m（メッセージ欄に直接入力OK）",
             actions=[
                 PostbackAction(label="30分", data="dur=30m"),
                 PostbackAction(label="60分", data="dur=60m"),
@@ -500,58 +462,35 @@ def ask_duration_menu():
         ),
     )
 
-# 役割: 所要時間文字列を分→timedeltaに変換（H:MM / 90m / 2h などを許容）
-def parse_duration_to_delta(s: str):
-    s = (s or "").strip().lower()
-    # 1) H:MM 形式
-    m = re.fullmatch(r"(\d{1,2}):([0-5]\d)", s)
-    if m:
-        h, mm = int(m.group(1)), int(m.group(2))
-        return timezone.timedelta(minutes=h*60 + mm)
-    # 2) 90m / 120m / 45m
-    m = re.fullmatch(r"(\d{1,4})m", s)
-    if m:
-        mins = int(m.group(1))
-        return timezone.timedelta(minutes=mins)
-    # 3) 2h / 1h / 12h
-    m = re.fullmatch(r"(\d{1,3})h", s)
-    if m:
-        h = int(m.group(1))
-        return timezone.timedelta(hours=h)
-    # 4) 純数字（分とみなす）
-    if re.fullmatch(r"\d{1,4}", s):
-        return timezone.timedelta(minutes=int(s))
-    return None
 
-
-def parse_int_safe(s: str):
+def ask_capacity_menu():
     """
-    文字列を安全に整数へ変換する。数字のみで構成されていなければ None を返す。
+    定員入力の案内（数値はテキストで入力 / スキップ可）を返す。
     """
-    s = (s or "").strip()
-    if not re.fullmatch(r"\d+", s):
-        return None
-    try:
-        return int(s)
-    except Exception:
-        return None
+    return TemplateSendMessage(
+        alt_text="定員の設定",
+        template=ButtonsTemplate(
+            text="定員を設定する場合は数字で入力してね（スキップもできるよ）",
+            actions=[PostbackAction(label="設定しない（スキップ）", data="cap=skip")],
+        ),
+    )
 
+
+# ===== ドメイン処理 =====
 
 def finalize_event(draft: "EventDraft"):
     """
-    下書き（EventDraft）に溜めた値を元にEventを作成し、ユーザーへ作成結果を返す。
+    Draft を Event に確定し、作成結果メッセージを返す。
     """
-    # 実際にEventを1件作成する（capacityはNoneも許容：定員なし）
     e = Event.objects.create(
         name=draft.name,
         start_time=draft.start_time,
         end_time=draft.end_time,
         capacity=draft.capacity,
     )
-    # 完了メッセージを作って返す（IDや概要を含める）
     cap_text = "定員なし" if e.capacity is None else f"定員:{e.capacity}"
     summary = (
-        "イベントを作成した！\n"
+        "イベントを作成したよ！\n"
         f"ID:{e.id}\n"
         f"タイトル:{e.name}\n"
         f"開始:{e.start_time}\n"
@@ -563,10 +502,7 @@ def finalize_event(draft: "EventDraft"):
 
 def handle_command(text, user_id):
     """
-    ウィザード外の通常コマンドを処理するためのフックである。
-    例：
-      - 'イベント一覧' を受けて一覧を返す
-      - '参加:ID' を受けて参加登録する（capacity=Noneは無制限として扱う 等）
-    いまは説明簡潔化のため未実装でNoneを返す。必要に応じて既存実装を移植する。
+    ウィザード外コマンドのフック（未実装なら None を返す）。
+    例: 'イベント一覧', '参加:ID' など。
     """
     return None
