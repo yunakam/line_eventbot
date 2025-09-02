@@ -1,14 +1,55 @@
 # events/ui.py
 # 役割: LINEメッセージUIの共通関数群を集約し、viewsから呼び出すだけにする。
 
-from django.utils import timezone
+from . import utils
 from linebot.models import (
     TemplateSendMessage, ButtonsTemplate, PostbackAction,
-    DatetimePickerAction, QuickReply, QuickReplyButton
+    DatetimePickerAction, QuickReply, QuickReplyButton,
+    TextSendMessage, MessageAction,
+    CarouselTemplate, CarouselColumn
 )
 
 
-# ---- QuickReplyユーティリティ ----
+# ---- ホームメニュー（QuickReply）を表示 ----
+def ask_home_menu():
+    """
+    役割: 作成/一覧/ヘルプへのエントリをQuick Replyで提示する。
+    """
+    items = [
+        QuickReplyButton(action=PostbackAction(label="イベント作成", data="home=create")),
+        QuickReplyButton(action=PostbackAction(label="イベント一覧", data="home=list")),
+        QuickReplyButton(action=PostbackAction(label="ヘルプ", data="home=help")),
+    ]
+    return TextSendMessage(text="やりたいことを選んでね。", quick_reply=QuickReply(items=items))
+
+
+# ---- イベント一覧を表示 ----
+def build_event_list_carousel(events):
+    """
+    役割: 自分が作成したイベントの一覧をCarouselで返す。
+         各列に「詳細」「編集」を配置（アクション数を2に抑えて上限を回避）。
+    """
+    events = list(events or [])[:10]  # 列数ガード
+    if not events:
+        return TextSendMessage(text="作成したイベントはまだないよ")
+
+    cols = []
+    for e in events:
+        title = (e.name or "（無題）")[:40]  # タイトル長ガード
+        start_txt = utils.local_fmt(e.start_time, getattr(e, "start_time_has_clock", True))
+        text = f"開始: {start_txt}"[:60]    # 本文長ガード
+        cols.append(CarouselColumn(
+            title=title,
+            text=text,
+            actions=[
+                PostbackAction(label="詳細", data=f"evt=detail&id={e.id}"),
+                PostbackAction(label="編集",  data=f"evt=edit&id={e.id}"),
+            ],
+        ))
+    return TemplateSendMessage(alt_text="イベント一覧", template=CarouselTemplate(columns=cols))
+
+
+# ---- イベント作成ウィザード内の [戻る] [はじめからやり直す] QuickReply ----
 def make_quick_reply(show_back: bool = False, show_reset: bool = False):
     """
     役割: Quick Reply のボタンを必要に応じて生成する。
@@ -52,9 +93,9 @@ def ask_date_picker(prompt_text: str, data: str, min_dt=None, max_dt=None,
     """
     kwargs = {"label": "日付を選ぶ", "data": data, "mode": "date"}
     if min_dt:
-        kwargs["min"] = _fmt_line_date(min_dt)
+        kwargs["min"] = utils._fmt_line_date(min_dt)
     if max_dt:
-        kwargs["max"] = _fmt_line_date(max_dt)
+        kwargs["max"] = utils._fmt_line_date(max_dt)
         
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     return TemplateSendMessage(
@@ -73,18 +114,15 @@ def ask_time_menu(prompt_text: str, prefix: str,
                   with_back: bool = False, with_reset: bool = False):
     """
     役割: 時刻候補（Postback）＋任意でスキップを提示する共通メニュー。
-    - prefix: 'start' or 'end'（Postback data に埋め込む）
-    - times: ボタンに出す候補時刻
-    - allow_skip: スキップボタンを出すか
+    ButtonsTemplate は actions 最大4件のため、候補数を丸める。
     """
+    max_time_buttons = 3 if allow_skip else 4
+    times = tuple(times[:max_time_buttons])  # ← これで常に4件以内に収める
+
     acts = [PostbackAction(label=t, data=f"time={prefix}&v={t}") for t in times]
     if allow_skip:
-        acts.append(
-            PostbackAction(
-                label="スキップ", 
-                data=f"time={prefix}&v=__skip__"
-                )
-            )
+        acts.append(PostbackAction(label="スキップ", data=f"time={prefix}&v=__skip__"))
+
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     return build_buttons(
         text=prompt_text,
@@ -93,6 +131,7 @@ def ask_time_menu(prompt_text: str, prefix: str,
         title=None,
         quick_reply=qr
     )
+
 
 # ---- 終了指定方法メニュー ----
 def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False):
@@ -107,7 +146,7 @@ def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False):
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     
     return build_buttons(
-        text="イベント終了時刻はどうやって入力する？",
+        text="どっちを入力する？",
         actions=acts,
         alt_text="終了の指定方法",
         title=None,
@@ -150,3 +189,56 @@ def ask_capacity_menu(text: str = "定員を数字で入力してね",
         title=None,
         quick_reply=qr
     )
+
+# ---- イベント一覧表示 ----
+def build_event_list_menu(events):
+    """
+    役割: イベント一覧を「詳細」「編集」ボタン付きで並べる（最大5件などに制限推奨）。
+    """
+    items = []
+    for e in events[:5]:
+        text = f"ID:{e.id}\n{e.name}\n開始:{utils.local_fmt(e.start_time, getattr(e, 'start_time_has_clock', True))}"
+        acts = [
+            PostbackAction(label="詳細", data=f"evt=detail&id={e.id}"),
+            PostbackAction(label="編集", data=f"evt=edit&id={e.id}"),
+        ]
+        items.append(build_buttons(text=text, actions=acts, alt_text="イベント一覧"))
+    return items  # 複数TemplateSendMessageを返す
+
+
+def ask_edit_menu():
+    """
+    役割: 編集する項目の選択メニューを表示する（Quick Reply）。
+    """
+    items = [
+        QuickReplyButton(action=PostbackAction(label="タイトル",   data="edit=title")),
+        QuickReplyButton(action=PostbackAction(label="開始日",     data="edit=start_date")),
+        QuickReplyButton(action=PostbackAction(label="開始時刻",   data="edit=start_time")),
+        QuickReplyButton(action=PostbackAction(label="終了時刻", data="edit=end")),
+        QuickReplyButton(action=PostbackAction(label="定員",       data="edit=cap")),
+        QuickReplyButton(action=PostbackAction(label="保存",       data="edit=save")),
+        QuickReplyButton(action=PostbackAction(label="中止",       data="edit=cancel")),
+    ]
+    return TextSendMessage(
+        text="編集する項目を選んでね。\n変更内容を保存するときは【保存】，編集をやめるときは【中止】を選んでね",
+        quick_reply=QuickReply(items=items)
+    )
+
+
+def build_event_summary(e, end_has_clock: bool | None = None):
+    """
+    役割: イベント詳細（確認用）の文面を構築する。
+    """
+    start_text = utils.local_fmt(e.start_time, getattr(e, "start_time_has_clock", True))
+    if e.end_time is None:
+        end_text = "終了時間: （未設定）"
+    else:
+        # end_has_clock が指定されればそれを優先（編集ドラフト時の確認用）
+        has_clock = end_has_clock if end_has_clock is not None else True
+        if not has_clock and not getattr(e, "start_time_has_clock", True):
+            mins = int((e.end_time - e.start_time).total_seconds() // 60)
+            end_text = f"所要時間: {utils.minutes_humanize(mins)}"
+        else:
+            end_text = f"終了時間: {utils.local_fmt(e.end_time, True)}"
+    cap_text = "定員なし" if e.capacity is None else f"定員: {e.capacity}"
+    return TextSendMessage(text=f"ID:{e.id}\nタイトル:{e.name}\n開始:{start_text}\n{end_text}\n{cap_text}")

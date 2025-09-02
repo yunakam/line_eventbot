@@ -7,6 +7,11 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 
+def _fmt_line_date(dt):
+    """Datetime -> 'YYYY-MM-DD'（DatetimePicker mode='date'用）に整形して返す。"""
+    local = timezone.localtime(dt, timezone.get_current_timezone())
+    return local.strftime("%Y-%m-%d")
+
 def hhmm_to_utc_on_same_day(base_awaredt, hhmm: str, tz=None):
     """
     base_awaredt: その日の00:00等（aware, UTC想定）
@@ -133,11 +138,6 @@ def extract_dt_from_params_date_only(params: dict):
 #         if not ok:
 #             return None
 #     return date_dt.replace(hour=h, minute=m, second=0, microsecond=0)
-
-# def _fmt_line_date(dt):
-#     """Datetime -> 'YYYY-MM-DD'（DatetimePicker mode='date'用）に整形して返す。"""
-#     local = timezone.localtime(dt, timezone.get_current_timezone())
-#     return local.strftime("%Y-%m-%d")
 
 # def _fmt_line_datetime(dt):
 #     """Datetime -> 'YYYY-MM-DDTHH:MM'（DatetimePicker initial/min/max用）に整形して返す。"""

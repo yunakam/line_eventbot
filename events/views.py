@@ -10,7 +10,7 @@ from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 from datetime import timedelta, datetime
 
-from .models import Event, EventDraft
+from .models import Event, EventDraft, EventEditDraft
 from . import ui, utils
 
 from linebot import LineBotApi, WebhookParser
@@ -24,17 +24,6 @@ from linebot.exceptions import InvalidSignatureError
 import logging
 logger = logging.getLogger(__name__)
 
-"""
-【動作フロー】
-1.「イベント作成」と入力
-2. タイトル入力
-3. 開始日時：日付ピッカー → 時刻入力/選択
-4.「終了の指定方法」メニュー
-    1) 終了時刻入力/選択　※終了日=開始日
-    2) 所要時間を入力/選択
-5. 定員設定（数字入力 or スキップ）
-6. イベント作成完了
-"""
 
 def get_line_clients():
     """
@@ -50,57 +39,155 @@ def get_line_clients():
     return LineBotApi(token), WebhookParser(secret)
 
 
+def _handle_evt_shortcut(user_id: str, data: str):
+    """
+    イベント一覧 Carousel などから飛んでくる evt=detail/edit を編集ドラフト無しでも処理する。
+    - detail: そのまま詳細を返す
+    - edit  : ドラフトを作成して編集メニューへ
+    """
+    m = re.search(r"evt=(detail|edit)&id=(\d+)", data)
+    if not m:
+        return None
+    kind, eid = m.group(1), int(m.group(2))
+    from .models import Event, EventEditDraft
+    try:
+        e = Event.objects.get(id=eid, scope_id=scope_id)
+    except Event.DoesNotExist:
+        return TextSendMessage(text="該当するイベントが見つからないよ")
+
+    if kind == "detail":
+        # 確認用の詳細メッセージをそのまま返す
+        return ui.build_event_summary(e)
+
+    # kind == "edit": 権限チェック → OKなら編集ドラフト作成
+    if not can_edit_event(user_id, e):
+        return TextSendMessage(text="イベントの作成者だけが編集できるよ")
+    
+    EventEditDraft.objects.update_or_create(
+        user_id=user_id,
+        defaults={
+            "event": e,
+            "scope_id": scope_id,
+            "step": "menu",
+            "name": e.name,
+            "start_time": e.start_time,
+            "start_time_has_clock": getattr(e, "start_time_has_clock", True),
+            "end_time": e.end_time,
+            "end_time_has_clock": True,
+            "capacity": e.capacity,
+        }
+    )
+    return ui.ask_edit_menu()
+
+
+def _resolve_scope_id(ev) -> str:
+    """
+    LINEの会話スコープIDを決める。
+    - グループ: ev.source.group_id
+    - ルーム  : ev.source.room_id
+    - 1:1     : ev.source.user_id
+    
+    ※これを設定しないことで、複数のグループでボットを使う場合に
+    他グループのイベントまで閲覧可能となる
+    """
+    return getattr(ev.source, "group_id", None) \
+        or getattr(ev.source, "room_id", None) \
+        or getattr(ev.source, "user_id", "")
+
+
+# ==== LINEプラットフォームからのWebhookエンドポイント ==== #
 @csrf_exempt
 def callback(request):
-    """LINEプラットフォームからのWebhookエンドポイントである。"""
     if request.method != "POST":
         return HttpResponse("Method not allowed", status=405)
 
+    # --- Line SDK クライアントを取得 ---
     line_bot_api, parser = get_line_clients()
 
+    # --- LINE 署名検証＆イベントパース ---
     signature = request.headers.get("X-Line-Signature", "")
     body = request.body.decode("utf-8")
-
     try:
         events = parser.parse(body, signature)
     except InvalidSignatureError:
         return HttpResponse(status=400)
 
+    # --- 受信イベントを順次処理 ---
     for ev in events:
-        # --- テキストメッセージ ---
+        scope_id = _resolve_scope_id(ev.source) 
+
+        # =================================
+        # 1) 通常メッセージ（テキスト）を受信
+        # =================================
         if isinstance(ev, MessageEvent) and isinstance(ev.message, TextMessage):
             user_id = ev.source.user_id
             text = ev.message.text.strip()
 
+            # 1-1) 「編集ドラフトがあるなら」編集テキストハンドラを優先
+            if EventEditDraft.objects.filter(user_id=user_id).exists():
+                reply = handle_edit_text(user_id, text)
+                if reply:
+                    line_bot_api.reply_message(ev.reply_token, reply)
+                    continue
+
+            # 1-2) 「イベント作成」開始コマンド
             if text == "イベント作成":
                 draft, _ = EventDraft.objects.get_or_create(user_id=user_id, defaults={"step": "title"})
                 draft.step = "title"
                 draft.name = ""
                 draft.start_time = None
+                draft.start_time_has_clock = False
                 draft.end_time = None
+                draft.end_time_has_clock = False
                 draft.capacity = None
+                draft.scope_id = scope_id
                 draft.save()
                 line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="イベントのタイトルは？"))
                 continue
 
+            # 1-3) 進行中の「作成ウィザード」テキスト処理
             if EventDraft.objects.filter(user_id=user_id).exists():
                 reply = handle_wizard_text(user_id, text)
                 if reply:
                     line_bot_api.reply_message(ev.reply_token, reply)
                     continue
 
-            reply_text = handle_command(text, user_id)
-            if not reply_text:
-                reply_text = "「イベント作成」と送ったらイベントが作れるよ！"
-            line_bot_api.reply_message(ev.reply_token, TextSendMessage(text=reply_text))
+            # 1-4) 通常コマンド（一覧/詳細:ID 等）
+            reply_obj = handle_command(text, user_id, scope_id)
+            if reply_obj:
+                # 送信可能な型はそのまま送る（TextSendMessage / TemplateSendMessage / list）
+                if isinstance(reply_obj, (TextSendMessage, TemplateSendMessage, list)):
+                    line_bot_api.reply_message(ev.reply_token, reply_obj)
+                # 文字列のみ TextSendMessage にラップ
+                elif isinstance(reply_obj, str):
+                    line_bot_api.reply_message(ev.reply_token, TextSendMessage(text=reply_obj))
+            else:
+                # それ以外はホームメニューへ
+                line_bot_api.reply_message(ev.reply_token, ui.ask_home_menu())
 
-        # --- Postback（ボタン押下・DatetimePickerの戻り） ---
+        # =================================================
+        # 2) Postback（ボタン押下・DatetimePicker戻り）を受信
+        # =================================================
         elif isinstance(ev, PostbackEvent):
             user_id = ev.source.user_id
-            data = ev.postback.data
+            data = ev.postback.data or ""       # ← None 安全化
             params = ev.postback.params or {}
 
-            reply = handle_wizard_postback(user_id, data, params)
+            # 一覧カルーセル等からの evt=detail/edit を最優先で処理（scope渡す）
+            shortcut = _handle_evt_shortcut(user_id, scope_id, data)
+            if shortcut:
+                line_bot_api.reply_message(ev.reply_token, shortcut)
+                continue
+
+            # 2-1) 編集ドラフトがあるなら編集ポストバックを優先
+            if EventEditDraft.objects.filter(user_id=user_id).exists():
+                reply = handle_edit_postback(user_id, scope_id, data, params)
+                if reply:
+                    line_bot_api.reply_message(ev.reply_token, reply)
+                    continue
+
+            # 2-2) 作成ウィザード（ドラフト前提）のポストバック処理
+            reply = handle_wizard_postback(user_id, data, params, scope_id)
             if reply:
                 line_bot_api.reply_message(ev.reply_token, reply)
 
@@ -188,6 +275,41 @@ def handle_wizard_postback(user_id: str, data: str, params: dict):
     ユーザーのPostback（ボタン選択・DatetimePickerの戻り）を処理する。
     日付ピッカー、時刻候補、所要時間候補、スキップ/戻る/リセットなど。
     """
+
+    # ---- 1) ホームメニュー（ドラフトの有無に関係なく動く） ---- 
+    if data == "home=create":
+        # 作成ウィザードを初期化してタイトル入力へ
+        draft, _ = EventDraft.objects.get_or_create(user_id=user_id, defaults={"step": "title"})
+        draft.step = "title"
+        draft.name = ""
+        draft.start_time = None
+        draft.end_time = None
+        draft.capacity = None
+        try:
+            draft.end_time_has_clock = False
+        except Exception:
+            pass
+        draft.scope_id = current_scope_id
+        draft.save()
+        return TextSendMessage(text="イベントのタイトルは？")
+
+    if data == "home=list":
+        scope_id = _resolve_scope_id(ev)
+        qs = Event.objects.filter(scope_id=scope_id).order_by("-id")[:10]
+        if hasattr(ui, "build_event_list_carousel"):
+            return ui.build_event_list_carousel(qs)
+        else:
+            if not qs:
+                return TextSendMessage(text="作成したイベントはまだないよ")
+            lines = [f"{e.id}: {e.name}" for e in qs]
+            return TextSendMessage(text="イベント一覧:\n" + "\n".join(lines))
+
+    if data == "home=help":
+        return TextSendMessage(
+            text="イベント作成や編集はメニューから操作できる。作成→タイトル→日付→開始時刻→終了の指定→定員の順で進む。"
+        )
+
+    # ---- 2) 作成ウィザード（ドラフト前提）の処理 ---- 
     try:
         draft = EventDraft.objects.get(user_id=user_id)
     except EventDraft.DoesNotExist:
@@ -215,12 +337,17 @@ def handle_wizard_postback(user_id: str, data: str, params: dict):
     if data == "pick=start_date" and draft.step == "start_date":
         d0 = utils.extract_dt_from_params_date_only(params)
         if not d0:
-            return TextSendMessage(text="開始日が取得できなかったよ。もう一度選んでね")
+            return TextSendMessage(text="日付が取得できなかったよ。もう一度選んでね")
         draft.start_time = d0  # 例: 2025-09-01 00:00 (+TZ aware)
         draft.start_time_has_clock = False
         draft.step = "start_time"
         draft.save()
-        return ui.ask_time_menu("開始時刻を【HH:MM】の形で入力するか、下から選んでね", prefix="start", with_back=True, with_reset=True)
+        return ui.ask_time_menu(
+            "開始時刻を HH:MM の形で入力するか、下から選んでね",
+            prefix="start",
+            with_back=True,
+            with_reset=True
+        )
 
     # 時刻候補のPostback（例: data="time=start&v=09:00"）
     m = re.search(r"time=(start|end)&v=([^&]+)$", data)
@@ -266,7 +393,6 @@ def handle_wizard_postback(user_id: str, data: str, params: dict):
 
     # 終了の指定方法：終了時刻を入力
     if data == "endmode=enddt":
-        # 終了日ベースに開始日と同日の00:00（ローカル）→UTCを設定
         draft.end_time = utils.hhmm_to_utc_on_same_day(draft.start_time, "00:00")
         try:
             draft.end_time_has_clock = False
@@ -274,7 +400,12 @@ def handle_wizard_postback(user_id: str, data: str, params: dict):
             pass
         draft.step = "end_time"
         draft.save()
-        return ui.ask_time_menu("終了時刻を【HH:MM】の形で入力するか、下から選んでね", prefix="end", with_back=True, with_reset=True)
+        return ui.ask_time_menu(
+            "終了時刻を HH:MM の形で入力するか、下から選んでね",
+            prefix="end",
+            with_back=True,
+            with_reset=True
+        )
 
     # 終了の指定方法：所要時間を入力
     if data == "endmode=duration":
@@ -335,6 +466,289 @@ def handle_wizard_postback(user_id: str, data: str, params: dict):
     return None
 
 
+# 編集ウィザードのテキスト入力を処理
+def handle_edit_text(user_id: str, text: str):
+    try:
+        draft = EventEditDraft.objects.get(user_id=user_id)
+    except EventEditDraft.DoesNotExist:
+        return None
+
+    # メニュー状態でのテキスト→Postback相当の解釈
+    if draft.step == "menu":
+        key = (text or "").strip().lower()
+        # 代表的な揺れを吸収
+        if key in ("タイトル", "title"):
+            draft.step = "title"; draft.save()
+            return TextSendMessage(text="タイトルを入力してね")
+        if key in ("日付", "開始日", "date", "start date"):
+            draft.step = "start_date"; draft.save()
+            return ui.ask_date_picker("日付を選んでくれ。", data="pick=start_date", with_back=True, with_reset=True)
+        if key in ("開始時刻", "開始時間", "start time", "time"):
+            if not draft.start_time:
+                return TextSendMessage(text="先に開始日を設定してね")
+            draft.step = "start_time"; draft.save()
+            return ui.ask_time_menu("開始時刻を【HH:MM】で入力するか、下から選んでくれ。", prefix="start", with_back=True, with_reset=True)
+        if key in ("終了時刻", "終了", "終了の指定", "end", "end time"):
+            draft.step = "end_mode"; draft.save()
+            return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+        if key in ("定員", "capacity", "cap"):
+            draft.step = "cap"; draft.save()
+            return ui.ask_capacity_menu(text="定員を数字で入力してね。定員なしにするなら「スキップ」を選んでね", with_back=True, with_reset=True)
+        if key in ("保存", "編集を保存", "save"):
+            e = draft.event
+            e.name = draft.name or e.name
+            e.start_time = draft.start_time or e.start_time
+            e.start_time_has_clock = draft.start_time_has_clock if draft.start_time is not None else getattr(e, "start_time_has_clock", True)
+            e.end_time = draft.end_time
+            e.capacity = draft.capacity if draft.capacity is not None else e.capacity
+            e.save()
+            msg = ui.build_event_summary(e, end_has_clock=draft.end_time_has_clock)
+            draft.delete()
+            return [TextSendMessage(text="編集内容を保存したよ！"), msg]
+        if key in ("中止", "編集を中止", "cancel"):
+            draft.delete()
+            return TextSendMessage(text="編集を中止したよ")
+
+        # どれにも当たらなければメニューを出し直す
+        return ui.ask_edit_menu()
+
+
+    # タイトル編集
+    if draft.step == "title":
+        if not text:
+            return TextSendMessage(text="タイトルを入力してね")
+        draft.name = text
+        draft.step = "menu"
+        draft.save()
+        return ui.ask_edit_menu()
+
+    # 開始時刻の手入力
+    if draft.step == "start_time":
+        new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, text)
+        if new_dt is None:
+            return TextSendMessage(text="時刻は HH:MM 形式で入力してね（例 09:00）")
+        draft.start_time = new_dt
+        draft.start_time_has_clock = True
+        draft.step = "end_mode"
+        draft.save()
+        return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+
+    # 終了時刻の手入力
+    if draft.step == "end_time":
+        new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, text)
+        if new_dt is None:
+            return TextSendMessage(text="時刻は HH:MM 形式で入力してね（例 19:00）")
+        if draft.start_time and new_dt <= draft.start_time:
+            return TextSendMessage(text="開始時刻よりも後の時間を入力してね")
+        draft.end_time = new_dt
+        draft.end_time_has_clock = True
+        draft.step = "menu"
+        draft.save()
+        return ui.ask_edit_menu()
+
+    # 所要時間の手入力
+    if draft.step == "duration":
+        delta = utils.parse_duration_to_delta(text)
+        if not delta or delta.total_seconds() <= 0:
+            return TextSendMessage(text="所要時間は 1:30 / 90m / 2h / 120 などの形で入力してね。")
+        if not draft.start_time:
+            return TextSendMessage(text="先に開始日時を設定してね")
+        draft.end_time = draft.start_time + delta
+        draft.end_time_has_clock = False
+        draft.step = "menu"
+        draft.save()
+        return ui.ask_edit_menu()
+
+    # 定員の数値入力
+    if draft.step == "cap":
+        capacity = utils.parse_int_safe(text)
+        if capacity is None or capacity <= 0:
+            return TextSendMessage(text="定員は1以上の整数を入力してね。定員なしにするなら「スキップ」を選んでね")
+        draft.capacity = capacity
+        draft.step = "menu"
+        draft.save()
+        return ui.ask_edit_menu()
+
+    # それ以外のステップはメニューに戻す
+    return ui.ask_edit_menu()
+
+
+# 編集ウィザードのPostbackを処理
+def handle_edit_postback(user_id: str, scope_id: str, data: str, params: dict):
+    try:
+        draft = EventEditDraft.objects.get(user_id=user_id)
+    except EventEditDraft.DoesNotExist:
+        return None
+
+    # イベント一覧からの導線: evt=detail / evt=edit
+    m = re.search(r"evt=(detail|edit)&id=(\d+)", data)
+    if m:
+        kind, eid = m.group(1), int(m.group(2))
+        try:
+            e = Event.objects.get(id=eid, created_by=user_id)
+        except Event.DoesNotExist:
+            return TextSendMessage(text="イベントが見つからないよ（または編集権限がないよ）")
+        if kind == "detail":
+            return ui.build_event_summary(e)
+        if kind == "edit":
+            # 編集開始（ドラフト上書き）
+            draft.event = e
+            draft.step = "menu"
+            draft.name = e.name
+            draft.start_time = e.start_time
+            draft.start_time_has_clock = getattr(e, "start_time_has_clock", True)
+            draft.end_time = e.end_time
+            draft.end_time_has_clock = True
+            draft.capacity = e.capacity
+            draft.save()
+            return ui.ask_edit_menu()
+
+    # ---- 編集メニューの各項目 ----
+    if data == "edit=title":
+        draft.step = "title"
+        draft.save()
+        return TextSendMessage(text="新しいタイトルを入力してね")
+
+    if data == "edit=start_date":
+        draft.step = "start_date"
+        draft.save()
+        return ui.ask_date_picker(
+            prompt_text="新しい日付を選んでね",
+            data="pick=start_date",
+            with_back=True,
+            with_reset=True
+        )
+
+    if data == "edit=start_time":
+        # すでに開始日(draft.start_time)がある前提
+        if not draft.start_time:
+            return TextSendMessage(text="先に日付を設定してね")
+        draft.step = "start_time"
+        draft.save()
+        return ui.ask_time_menu(
+            prompt_text="開始時刻を HH:MM で入力するか、下から選んでね",
+            prefix="start",
+            with_back=True,
+            with_reset=True
+        )
+
+    if data == "edit=end":
+        draft.step = "end_mode"
+        draft.save()
+        return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+
+    if data == "edit=cap":
+        draft.step = "cap"
+        draft.save()
+        return ui.ask_capacity_menu(text="定員を数字で入力してね。定員なしにするなら「スキップ」を選んでね", with_back=True, with_reset=True)
+
+    if data == "edit=cancel":
+        draft.delete()
+        return TextSendMessage(text="編集を中止したよ")
+
+    if data == "edit=save":
+        # ドラフト内容を本体Eventへ反映
+        e = draft.event
+        e.name = draft.name or e.name
+        e.start_time = draft.start_time or e.start_time
+        e.start_time_has_clock = draft.start_time_has_clock if draft.start_time is not None else getattr(e, "start_time_has_clock", True)
+        e.end_time = draft.end_time
+        e.capacity = draft.capacity if draft.capacity is not None else e.capacity
+        e.save()
+        msg = ui.build_event_summary(e, end_has_clock=draft.end_time_has_clock)
+        draft.delete()
+        return [TextSendMessage(text="編集内容を保存したよ！"), msg]
+
+    # 日付ピッカー
+    if data == "pick=start_date" and draft.step == "start_date":
+        d0 = utils.extract_dt_from_params_date_only(params)
+        if not d0:
+            return TextSendMessage(text="開始日がわからなかったよ。もう一度選んでね")
+        draft.start_time = d0
+        draft.start_time_has_clock = False
+        draft.step = "start_time"
+        draft.save()
+        return ui.ask_time_menu("開始時刻を HH:MM で入力するか、下から選んでね", prefix="start", with_back=True, with_reset=True)
+
+    # 時刻候補（開始/終了）
+    m = re.search(r"time=(start|end)&v=([^&]+)$", data)
+    if m:
+        kind, v = m.group(1), m.group(2)
+
+        if kind == "start" and draft.step == "start_time":
+            if v == "__skip__":
+                draft.start_time_has_clock = False
+                draft.step = "end_mode"
+                draft.save()
+                return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+
+            new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, v)
+            if new_dt is None:
+                return TextSendMessage(text="時刻は HH:MM の形で入力するか、下から選んでね")
+            draft.start_time = new_dt
+            draft.start_time_has_clock = True
+            draft.step = "end_mode"
+            draft.save()
+            return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+
+        if kind == "end" and draft.step == "end_time":
+            if v == "__skip__":
+                return TextSendMessage(text="終了時刻を入力するか、一つ戻って「スキップ」を選んでね")
+            new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, v)
+            if new_dt is None:
+                return TextSendMessage(text="時刻は HH:MM の形で入力するか、下から選んでね")
+            if draft.start_time and new_dt <= draft.start_time:
+                return TextSendMessage(text="開始時刻よりも後の時間を設定してね")
+            draft.end_time = new_dt
+            draft.end_time_has_clock = True
+            draft.step = "menu"
+            draft.save()
+            return ui.ask_edit_menu()
+
+    # 終了の指定方法（編集）
+    if data == "endmode=enddt":
+        draft.end_time = utils.hhmm_to_utc_on_same_day(draft.start_time, "00:00")
+        draft.end_time_has_clock = False
+        draft.step = "end_time"
+        draft.save()
+        return ui.ask_time_menu("終了時刻を HH:MM で入力するか、下から選んでね", prefix="end", with_back=True, with_reset=True)
+
+    if data == "endmode=duration":
+        draft.end_time_has_clock = False
+        draft.step = "duration"
+        draft.save()
+        return ui.ask_duration_menu(with_back=True, with_reset=True)
+
+    if data == "endmode=skip":
+        draft.end_time = None
+        draft.end_time_has_clock = False
+        draft.step = "menu"
+        draft.save()
+        return ui.ask_edit_menu()
+
+    # 所要時間プリセット
+    if data.startswith("dur=") and draft.step == "duration":
+        code = data.split("=", 1)[1]
+        if code == "skip":
+            draft.end_time = None
+            draft.end_time_has_clock = False
+            draft.step = "menu"
+            draft.save()
+            return ui.ask_edit_menu()
+
+        delta = utils.parse_duration_to_delta(code)
+        if not delta or delta.total_seconds() <= 0:
+            return TextSendMessage(text="""所要時間を入力するか、下から選んでね\n
+                                   入力例： 1:30 / 90m / 2h / 120 で入力するか""")
+        draft.end_time = draft.start_time + delta
+        draft.end_time_has_clock = False
+        draft.step = "menu"
+        draft.save()
+        return ui.ask_edit_menu()
+
+    return None
+
+
 # ===== ドメイン処理 =====
 
 def _go_back_one_step(draft: "EventDraft"):
@@ -368,7 +782,7 @@ def _go_back_one_step(draft: "EventDraft"):
             pass
         draft.step = "start_time"
         draft.save()
-        return ui.ask_time_menu("開始時刻を【HH:MM】の形で入力するか、下から選んでね", prefix="start", with_back=True, with_reset=True)
+        return ui.ask_time_menu("開始時刻を HH:MM の形で入力するか、下から選んでね", prefix="start", with_back=True, with_reset=True)
 
     if draft.step == "end_time":
         draft.end_time = None
@@ -409,6 +823,8 @@ def finalize_event(draft: "EventDraft"):
         end_time=draft.end_time,
         capacity=draft.capacity,
         start_time_has_clock=draft.start_time_has_clock,
+        created_by=draft.user_id,
+        scope_id=draft.scope_id, 
     )
 
     start_text = utils.local_fmt(e.start_time, getattr(e, "start_time_has_clock", True))
@@ -437,12 +853,60 @@ def finalize_event(draft: "EventDraft"):
         f"{end_text}\n"
         f"{cap_text}"
     )
-    return TextSendMessage(text=summary)
+    
+    msg = TextSendMessage(text=summary)
+    draft.delete()  # 確定後はドラフトを掃除
+    return msg
 
+# ---- テキストコマンドを処理（一覧／詳細／編集開始）----
+def handle_command(text: str, user_id: str, scope_id: str):
+    text = (text or "").strip()
 
-def handle_command(text, user_id):
-    """
-    ウィザード外コマンドのフック（未実装なら None を返す）。
-    例: 'イベント一覧', '参加:ID' など。
-    """
+    # 1) 一覧
+    if text == "イベント一覧":
+        qs = Event.objects.filter(created_by=user_id).order_by("-id")[:5]
+        if not qs:
+            return "作成したイベントはまだないよ"
+
+        lines = [f"{e.id}: {e.name}" for e in qs]
+        return "作成したイベント一覧：\n" + "\n".join(lines) + "\n\nイベントの詳細を見る→「イベント詳細:ID」\nイベントを編集する→『編集:ID』"
+
+    # 2) 詳細（イベント詳細:3）
+    m = re.fullmatch(r"イベント詳細[:：]\s*(\d+)", text)
+    if m:
+        eid = int(m.group(1))
+        try:
+            e = Event.objects.get(id=eid, scope_id=scope_id)
+        except Event.DoesNotExist:
+            # 文字列ではなく TextSendMessage を返す（型を揃える）
+            return TextSendMessage(text="イベントが見つからないよ（または編集権限がないよ）")
+
+        msg = ui.build_event_summary(e)
+        return msg
+
+    # 3) 編集開始（編集:3）
+    m = re.fullmatch(r"編集[:：]\s*(\d+)", text)
+    if m:
+        eid = int(m.group(1))
+        try:
+            e = Event.objects.get(id=eid, created_by=user_id)
+        except Event.DoesNotExist:
+            return "イベントが見つからないよ（または編集権限がないよ）"
+        # 編集ドラフトを作成/初期化
+        from .models import EventEditDraft
+        draft, _ = EventEditDraft.objects.update_or_create(
+            user_id=user_id,
+            defaults={
+                "event": e,
+                "step": "menu",
+                "name": e.name,
+                "start_time": e.start_time,
+                "start_time_has_clock": getattr(e, "start_time_has_clock", True),
+                "end_time": e.end_time,
+                "end_time_has_clock": True,
+                "capacity": e.capacity,
+            }
+        )
+        return ui.ask_edit_menu()
     return None
+

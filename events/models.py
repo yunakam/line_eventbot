@@ -7,6 +7,8 @@ class Event(models.Model):
     start_time_has_clock = models.BooleanField(default=True)
     end_time = models.DateTimeField(null=True, blank=True)
     capacity = models.IntegerField(null=True, blank=True)
+    created_by = models.CharField(max_length=50, null=True, blank=True) 
+    scope_id = models.CharField(max_length=128, null=True, blank=True, db_index=True)
 
     def __str__(self):
         return self.name
@@ -36,6 +38,8 @@ class EventDraft(models.Model):
         ("done",       "完了"),
     ]
     user_id = models.CharField(max_length=50, unique=True)  # ユーザーごとに1件の下書き
+    scope_id = models.CharField(max_length=128, null=True, blank=True)
+    
     step = models.CharField(max_length=10, choices=STEP_CHOICES, default="title")
     
     # 一時保存カラム
@@ -47,4 +51,35 @@ class EventDraft(models.Model):
         help_text="終了時刻が HH:MM で指定された場合に True"
     )
     end_time = models.DateTimeField(null=True, blank=True)
+    capacity = models.IntegerField(null=True, blank=True)
+
+
+# ---- イベント編集の進行状態を保存する下書き ---- #
+class EventEditDraft(models.Model):
+    """
+    ユーザーごとに、どのイベントをどの項目まで編集しているかを保存する。
+    """
+    STEP_CHOICES = [
+        ("menu", "編集項目メニュー表示中"),
+        ("title", "タイトル編集中"),
+        ("start_date", "開始日編集中"),
+        ("start_time", "開始時刻編集中"),
+        ("end_mode", "終了指定方法選択中"),
+        ("end_time", "終了時刻編集中"),
+        ("duration", "所要時間編集中"),
+        ("cap", "定員編集中"),
+        ("confirm", "確認"),
+    ]
+    user_id = models.CharField(max_length=50, unique=True)
+    scope_id = models.CharField(max_length=128, null=True, blank=True)
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="edit_drafts")
+    step = models.CharField(max_length=12, choices=STEP_CHOICES, default="menu")
+
+    # 一時保存カラム（未入力なら元イベント値を採用する想定）
+    name = models.CharField(max_length=200, blank=True, default="")
+    start_time = models.DateTimeField(null=True, blank=True)
+    start_time_has_clock = models.BooleanField(default=False)
+    end_time = models.DateTimeField(null=True, blank=True)
+    end_time_has_clock = models.BooleanField(default=False)
     capacity = models.IntegerField(null=True, blank=True)
