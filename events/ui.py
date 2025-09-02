@@ -65,13 +65,6 @@ def ask_date_picker(prompt_text: str, data: str, min_dt=None, max_dt=None,
         ),
         quick_reply=qr
     )   
-    # return build_buttons(
-    #     text=prompt_text,
-    #     actions=[DatetimePickerAction(**kwargs)],
-    #     alt_text="日付選択",
-    #     title=None,
-    #     quick_reply=qr
-    # )
 
 # ---- 時刻入力メニュー（候補＋スキップ誘導）----
 def ask_time_menu(prompt_text: str, prefix: str,
@@ -86,7 +79,12 @@ def ask_time_menu(prompt_text: str, prefix: str,
     """
     acts = [PostbackAction(label=t, data=f"time={prefix}&v={t}") for t in times]
     if allow_skip:
-        acts.append(PostbackAction(label="スキップ", data=f"time={prefix}&v=__skip__"))
+        acts.append(
+            PostbackAction(
+                label="スキップ", 
+                data=f"time={prefix}&v=__skip__"
+                )
+            )
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     return build_buttons(
         text=prompt_text,
@@ -99,13 +97,15 @@ def ask_time_menu(prompt_text: str, prefix: str,
 # ---- 終了指定方法メニュー ----
 def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False):
     """
-    役割: 「終了日時を入力」or「所要時間を入力」を選ばせる。
+    役割: 「終了時刻を入力/所要時間を入力/スキップ（入力しない）」を選ばせる。
     """
     acts = [
-        PostbackAction(label="終了日時を入力", data="endmode=enddt"),
+        PostbackAction(label="終了時刻を入力", data="endmode=enddt"),
         PostbackAction(label="所要時間を入力", data="endmode=duration"),
+        PostbackAction(label="スキップ", data="endmode=skip"),
     ]
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
+    
     return build_buttons(
         text="イベント終了時刻はどうやって入力する？",
         actions=acts,
@@ -118,13 +118,12 @@ def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False):
 def ask_duration_menu(with_back: bool = False, with_reset: bool = False):
     """
     役割: 所要時間のプリセット（30/60/90分）と自由入力の案内を提示する。
-    ※ 自由入力はテキストで受ける方針なのでボタンはプリセットのみ。
     """
     acts = [
         PostbackAction(label="30分", data="dur=30m"),
         PostbackAction(label="60分", data="dur=60m"),
         PostbackAction(label="1時間30分", data="dur=90m"),
-        # PostbackAction(label="自由入力", data="dur=input"),
+        PostbackAction(label="スキップ", data="dur=skip"),
     ]
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     return build_buttons(
@@ -136,7 +135,7 @@ def ask_duration_menu(with_back: bool = False, with_reset: bool = False):
     )
 
 # ---- 定員入力メニュー ----
-def ask_capacity_menu(text: str = "定員を数字で入力してね（スキップもできるよ）",
+def ask_capacity_menu(text: str = "定員を数字で入力してね",
                       with_back: bool = False, with_reset: bool = False):
     """
     役割: 定員を数字で入力させる前提の案内と、スキップボタンのみを出す共通メニュー。
