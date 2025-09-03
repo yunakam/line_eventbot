@@ -41,10 +41,12 @@ def build_event_list_carousel(events):
         cols.append(CarouselColumn(
             title=title,
             text=text,
+            # 列全体タップで詳細へ（本体タップ）
+            default_action=PostbackAction(label="開く", data=f"evt=detail&id={e.id}"),
+            # LINE仕様で空配列は禁止のため、最低1つボタンを置く
             actions=[
-                PostbackAction(label="詳細", data=f"evt=detail&id={e.id}"),
-                PostbackAction(label="編集",  data=f"evt=edit&id={e.id}"),
-            ],
+                PostbackAction(label="開く", data=f"evt=detail&id={e.id}")
+            ]
         ))
     return TemplateSendMessage(alt_text="イベント一覧", template=CarouselTemplate(columns=cols))
 
@@ -121,7 +123,7 @@ def ask_time_menu(text: str, prefix: str,
 
     acts = [PostbackAction(label=t, data=f"time={prefix}&v={t}") for t in times]
     if allow_skip:
-        acts.append(PostbackAction(label="スキップ", data=f"time={prefix}&v=__skip__"))
+        acts.append(PostbackAction(label="設定しない", data=f"time={prefix}&v=__skip__"))
 
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     return build_buttons(
@@ -141,7 +143,7 @@ def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False):
     acts = [
         PostbackAction(label="終了時刻を入力", data="endmode=enddt"),
         PostbackAction(label="所要時間を入力", data="endmode=duration"),
-        PostbackAction(label="スキップ", data="endmode=skip"),
+        PostbackAction(label="設定しない", data="endmode=skip"),
     ]
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     
@@ -162,7 +164,7 @@ def ask_duration_menu(with_back: bool = False, with_reset: bool = False):
         PostbackAction(label="30分", data="dur=30m"),
         PostbackAction(label="60分", data="dur=60m"),
         PostbackAction(label="1時間30分", data="dur=90m"),
-        PostbackAction(label="スキップ", data="dur=skip"),
+        PostbackAction(label="設定しない", data="dur=skip"),
     ]
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     return build_buttons(
@@ -190,22 +192,7 @@ def ask_capacity_menu(text: str = "定員を数字で入力してね",
         quick_reply=qr
     )
 
-# ---- イベント一覧表示 ----
-def build_event_list_menu(events):
-    """
-    役割: イベント一覧を「詳細」「編集」ボタン付きで並べる（最大5件などに制限推奨）。
-    """
-    items = []
-    for e in events[:5]:
-        text = f"ID:{e.id}\n{e.name}\n開始:{utils.local_fmt(e.start_time, getattr(e, 'start_time_has_clock', True))}"
-        acts = [
-            PostbackAction(label="詳細", data=f"evt=detail&id={e.id}"),
-            PostbackAction(label="編集", data=f"evt=edit&id={e.id}"),
-        ]
-        items.append(build_buttons(text=text, actions=acts, alt_text="イベント一覧"))
-    return items  # 複数TemplateSendMessageを返す
-
-
+# ---- 編集項目選択メニュー ----
 def ask_edit_menu():
     """
     役割: 編集する項目の選択メニューを表示する（Quick Reply）。
@@ -220,25 +207,52 @@ def ask_edit_menu():
         QuickReplyButton(action=PostbackAction(label="中止",       data="edit=cancel")),
     ]
     return TextSendMessage(
-        text="編集する項目を選んでね。\n変更内容を保存するときは【保存】，編集をやめるときは【中止】を選んでね",
+        text="編集する項目を選んでね。\n編集内容を保存するときは【保存】，編集をやめるときは【中止】を選んでね",
         quick_reply=QuickReply(items=items)
     )
 
 
-def build_event_summary(e, end_has_clock: bool | None = None):
+def build_event_summary(e, end_has_clock: bool | None = None, with_edit_button: bool = True):
     """
     役割: イベント詳細（確認用）の文面を構築する。
+    - with_edit_button=True のとき、本文の下に「編集」ボタン（Postback）を付与する。
     """
     start_text = utils.local_fmt(e.start_time, getattr(e, "start_time_has_clock", True))
     if e.end_time is None:
         end_text = "終了時間: （未設定）"
     else:
-        # end_has_clock が指定されればそれを優先（編集ドラフト時の確認用）
         has_clock = end_has_clock if end_has_clock is not None else True
         if not has_clock and not getattr(e, "start_time_has_clock", True):
             mins = int((e.end_time - e.start_time).total_seconds() // 60)
             end_text = f"所要時間: {utils.minutes_humanize(mins)}"
         else:
             end_text = f"終了時間: {utils.local_fmt(e.end_time, True)}"
+
     cap_text = "定員なし" if e.capacity is None else f"定員: {e.capacity}"
-    return TextSendMessage(text=f"ID:{e.id}\nタイトル:{e.name}\n開始:{start_text}\n{end_text}\n{cap_text}")
+    body = f"ID:{e.id}\nタイトル:{e.name}\n開始:{start_text}\n{end_text}\n{cap_text}"
+
+    if not with_edit_button:
+        # 従来どおりテキストのみで返したい場合
+        return TextSendMessage(text=body)
+
+    # 「編集」ボタン付きで返す（押下で evt=edit に遷移）
+    return build_buttons(
+        text=body,
+        actions=[PostbackAction(label="編集", data=f"evt=edit&id={e.id}")],
+        alt_text="イベント詳細",
+        title=None,
+        quick_reply=None
+    )
+
+
+# --- 一覧UIのディスパッチャ（将来 Flex / カレンダーに差し替え可）---
+def render_event_list(events, style: str = "carousel"):
+    """
+    役割: イベント一覧の見た目を一元化して返す。
+    - style='carousel' | 'flex' | 'calendar'（将来拡張）
+    """
+    if style == "carousel":
+        return build_event_list_carousel(events)
+    # 将来: if style == "flex": return build_event_list_flex(events)
+    # 将来: if style == "calendar": return build_event_list_calendar(events)
+    return build_event_list_carousel(events)

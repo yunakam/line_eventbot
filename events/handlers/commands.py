@@ -14,13 +14,11 @@ def handle_command(text: str, user_id: str, scope_id: str):
 
     # 一覧（グループ＝scope_id 全体を対象）
     if text == "イベント一覧":
-        qs = Event.objects.filter(scope_id=scope_id).order_by("-id")[:5]
+        qs = Event.objects.filter(scope_id=scope_id).order_by("-id")[:10]
         if not qs:
-            return "作成されたイベントがないよ"
-        lines = [f"{e.id}: {e.name}" for e in qs]
-        return "イベント一覧（直近5件）：\n" + "\n".join(lines) + \
-               "\n\nイベントの詳細を見る→「イベント詳細:ID」\nイベントを編集する→『編集:ID』"
-
+            return "作成されたイベントはまだないよ"
+        return ui.render_event_list(qs) 
+    
     # イベント詳細
     m = re.fullmatch(r"イベント詳細[:：]\s*(\d+)", text)
     if m:

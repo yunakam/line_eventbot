@@ -184,8 +184,8 @@ def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str)
     if data == "home=list":
         from ..models import Event
         qs = Event.objects.filter(scope_id=scope_id).order_by("-id")[:10]
-        if hasattr(ui, "build_event_list_carousel"):
-            return ui.build_event_list_carousel(qs)
+        return ui.render_event_list(qs)  # ← 統一入口
+
         if not qs:
             return TextSendMessage(text="作成したイベントはまだないよ")
         lines = [f"{e.id}: {e.name}" for e in qs]
