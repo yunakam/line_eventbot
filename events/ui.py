@@ -83,7 +83,7 @@ def build_buttons(text: str, actions, alt_text: str = "選択メニュー", titl
     return TemplateSendMessage(alt_text=alt_text, template=tpl, quick_reply=quick_reply)
 
 # ---- 日付ピッカー ----
-def ask_date_picker(prompt_text: str, data: str, min_dt=None, max_dt=None,
+def ask_date_picker(text: str, data: str, min_dt=None, max_dt=None,
                     with_back: bool = False, with_reset: bool = False):
     """
     役割: mode='date' の DatetimePicker を1つだけ持つメニューを返す。
@@ -101,14 +101,14 @@ def ask_date_picker(prompt_text: str, data: str, min_dt=None, max_dt=None,
     return TemplateSendMessage(
         alt_text="日付を選ぶ",
         template=ButtonsTemplate(
-            text=prompt_text,
+            text=text,
             actions=[DatetimePickerAction(**kwargs)]
         ),
         quick_reply=qr
     )   
 
 # ---- 時刻入力メニュー（候補＋スキップ誘導）----
-def ask_time_menu(prompt_text: str, prefix: str,
+def ask_time_menu(text: str, prefix: str,
                   times: tuple[str, ...] = ("09:00", "10:00", "19:00"),
                   allow_skip: bool = True,
                   with_back: bool = False, with_reset: bool = False):
@@ -125,7 +125,7 @@ def ask_time_menu(prompt_text: str, prefix: str,
 
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
     return build_buttons(
-        text=prompt_text,
+        text=text,
         actions=acts,
         alt_text="時刻入力",
         title=None,
@@ -212,7 +212,7 @@ def ask_edit_menu():
     """
     items = [
         QuickReplyButton(action=PostbackAction(label="タイトル",   data="edit=title")),
-        QuickReplyButton(action=PostbackAction(label="開始日",     data="edit=start_date")),
+        QuickReplyButton(action=PostbackAction(label="日付",     data="edit=start_date")),
         QuickReplyButton(action=PostbackAction(label="開始時刻",   data="edit=start_time")),
         QuickReplyButton(action=PostbackAction(label="終了時刻", data="edit=end")),
         QuickReplyButton(action=PostbackAction(label="定員",       data="edit=cap")),
