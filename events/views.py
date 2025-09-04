@@ -132,36 +132,81 @@ def callback(request):
             params = ev.postback.params or {}
 
             if data == "back_home":
+                # イベントドラフトを破棄
+                EventDraft.objects.filter(user_id=user_id).delete()
+                EventEditDraft.objects.filter(user_id=user_id).delete()
+                
                 line_bot_api.reply_message(ev.reply_token, ui.ask_home_menu())
                 continue
 
-            # 1) 一覧/詳細/編集のショートカットを最優先で処理
+            # 1) まずイベント削除（確認→実行）を処理
+            if data.startswith("evt=delete&id="):
+                m = re.search(r"evt=delete&id=(\d+)", data)
+                if not m:
+                    line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="不正なイベントIDだよ"))
+                    continue
+                eid = int(m.group(1))
+                e = Event.objects.filter(id=eid, scope_id=scope_id).first()
+                if not e:
+                    line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="イベントが見つからないよ"))
+                    continue
+                line_bot_api.reply_message(ev.reply_token, ui.ask_delete_confirm(e))
+                continue
+
+            if data.startswith("evt=delete_confirm"):
+                m = re.search(r"id=(\d+)", data)
+                ok = "ok=1" in data
+                if not m:
+                    line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="不正なイベントIDだよ"))
+                    continue
+                eid = int(m.group(1))
+                e = Event.objects.filter(id=eid, scope_id=scope_id).first()
+                if not e:
+                    line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="イベントが見つからないよ"))
+                    continue
+
+                if ok:
+                    # TODO: 権限チェック（作成者のみ削除可 等）が必要ならここで判定
+                    Event.objects.filter(id=eid, scope_id=scope_id).delete()
+                    line_bot_api.reply_message(ev.reply_token, [
+                        TextSendMessage(text="イベントを削除したよ"),
+                        ui.ask_home_menu()
+                    ])
+                else:
+                    # キャンセル → 詳細へ戻す（元のButtonsTemplate）
+                    line_bot_api.reply_message(ev.reply_token, ui.build_event_summary(e))
+                continue
+            
+            
+            # 2) 次に一覧/詳細/編集のショートカットを処理
             shortcut = cmd.handle_evt_shortcut(user_id, scope_id, data)
             if shortcut:
                 if isinstance(shortcut, (TextSendMessage, TemplateSendMessage)):
-                    shortcut.quick_reply = ui.make_quick_reply(show_home=True, show_exit=True)
+                    if getattr(shortcut, "quick_reply", None) is None:
+                        shortcut.quick_reply = ui.make_quick_reply(show_home=True, show_exit=True)
                 line_bot_api.reply_message(ev.reply_token, shortcut)
                 continue
 
-            # 2) ホームメニューの「イベント一覧」
+            # 3) ホームメニューの「イベント一覧」
             if data == "home=list":
                 qs = Event.objects.filter(scope_id=scope_id).order_by("-id")[:10]
                 reply = ui.render_event_list(qs)  # QRはこの時点では付いていない
                 if isinstance(reply, list):
                     reply = ui.attach_exit_qr(reply)
                 else:
-                    reply.quick_reply = ui.make_quick_reply(show_home=True, show_exit=True)
+                    if getattr(reply, "quick_reply", None) is None:
+                        reply.quick_reply = ui.make_quick_reply(show_home=True, show_exit=True)
                 line_bot_api.reply_message(ev.reply_token, reply)
                 continue
 
-            # 3) 編集ドラフトがあるなら編集ポストバック優先
+            # 4) 編集ドラフトがあるなら編集ポストバック優先
             if EventEditDraft.objects.filter(user_id=user_id).exists():
                 reply = ew.handle_edit_postback(user_id, scope_id, data, params)
                 if reply:
                     line_bot_api.reply_message(ev.reply_token, reply)
                     continue
 
-            # 4) 作成ウィザードのポストバック（home=create / endmode等 含む）
+            # 5) 作成ウィザードのポストバック（home=create / endmode等 含む）
             reply = cw.handle_wizard_postback(user_id, data, params, scope_id)
             if reply:
                 line_bot_api.reply_message(ev.reply_token, reply)

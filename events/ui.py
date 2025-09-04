@@ -6,7 +6,8 @@ from linebot.models import (
     TemplateSendMessage, ButtonsTemplate, PostbackAction,
     DatetimePickerAction, QuickReply, QuickReplyButton,
     TextSendMessage, MessageAction,
-    CarouselTemplate, CarouselColumn
+    CarouselTemplate, CarouselColumn,
+    ConfirmTemplate
 )
 
 
@@ -262,11 +263,28 @@ def build_event_summary(e, end_has_clock: bool | None = None, with_edit_button: 
     # 「編集」ボタン付きで返す（押下で evt=edit に遷移）
     return build_buttons(
         text=body,
-        actions=[PostbackAction(label="編集", data=f"evt=edit&id={e.id}")],
+        actions=[
+            PostbackAction(label="編集", data=f"evt=edit&id={e.id}"),
+            PostbackAction(label="削除", data=f"evt=delete&id={e.id}"),
+        ],
         alt_text="イベント詳細",
         title=None,
         quick_reply=None
     )
+
+
+def ask_delete_confirm(e):
+    """
+    削除前の確認テンプレートを返す。
+    """
+    tpl = ConfirmTemplate(
+        text=f"「{e.name or '（無題）'}」を削除していい？",
+        actions=[
+            PostbackAction(label="はい、削除する", data=f"evt=delete_confirm&id={e.id}&ok=1"),
+            PostbackAction(label="やめる",       data=f"evt=delete_confirm&id={e.id}&ok=0"),
+        ]
+    )
+    return TemplateSendMessage(alt_text="削除の確認", template=tpl)
 
 
 # --- 一覧UIのディスパッチャ（将来 Flex / カレンダーに差し替え可）---

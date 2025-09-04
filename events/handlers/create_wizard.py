@@ -191,11 +191,10 @@ def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str)
         return ui.ask_home_menu(data)
 
     if data == "home=exit":
-        # 作成中のドラフトを破棄する
+        # イベントドラフトを破棄
         EventDraft.objects.filter(user_id=user_id).delete()
-        # 編集ドラフトも破棄
-        EventEditDraft.objects.filter(user_id=user_id).delete()
-        
+        EventEditDraft.objects.filter(user_id=user_id).delete()       
+         
         return TextSendMessage(
             text="また必要になったら「ボット」と呼んでね👋"
         )

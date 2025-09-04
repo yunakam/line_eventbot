@@ -14,46 +14,8 @@ def handle_edit_text(user_id: str, text: str):
     except EventEditDraft.DoesNotExist:
         return None
     
-    # メニュー状態でのテキスト入力（メニュー選択の代替）
     if draft.step == "menu":
-        key = (text or "").strip().lower()
-        if key in ("タイトル", "title"):
-            draft.step = "title"
-            draft.save()
-            return TextSendMessage(text="タイトルを入力してね")
-        if key in ("日付", "開始日", "date", "start date"):
-            draft.step = "start_date"
-            draft.save()
-            return ui.ask_date_picker("日付を選んでね", data="pick=start_date")
-        if key in ("開始時刻", "開始時間", "start time", "time"):
-            if not draft.start_time:
-                return TextSendMessage(text="先に開始日を設定してね")
-            draft.step = "start_time"
-            return ui.ask_time_menu("開始時刻を【HH:MM】で入力するか、下から選んでね", prefix="start")
-        if key in ("終了時刻", "終了", "終了の指定", "end", "end time"):
-            draft.step = "end_mode"
-            return ui.ask_end_mode_menu(with_back=True, with_reset=True)
-        if key in ("定員", "capacity", "cap"):
-            draft.step = "cap"
-            draft.save()
-            return ui.ask_capacity_menu(text="定員を数字で入力してね")
-        if key in ("保存", "編集を保存", "save"):
-            e = draft.event
-            e.name = draft.name or e.name
-            e.start_time = draft.start_time or e.start_time
-            e.start_time_has_clock = draft.start_time_has_clock if draft.start_time is not None else getattr(e, "start_time_has_clock", True)
-            e.end_time = draft.end_time
-            e.capacity = draft.capacity if draft.capacity is not None else e.capacity
-            e.save()
-            msg = ui.build_event_summary(e, end_has_clock=draft.end_time_has_clock)
-            draft.delete()
-            return [TextSendMessage(text="編集内容を保存したよ！"), msg]
-        if key in ("中止", "編集を中止", "cancel"):
-            draft.delete()
-            return TextSendMessage(text="編集を中止したよ")
-        
-        # どれにも当たらなければメニューを出し直す
-        return None
+        return ui.ask_edit_menu()
 
     # タイトル編集
     if draft.step == "title":
@@ -167,7 +129,10 @@ def handle_edit_postback(user_id: str, scope_id: str, data: str, params: dict):
     
     if data == "edit=cancel":
         draft.delete()
-        return TextSendMessage(text="編集を中止したよ")
+        return [
+            TextSendMessage(text="編集を中止したよ"),
+            ui.ask_home_menu()
+        ]
 
     if data == "edit=save":
         e = draft.event
