@@ -11,16 +11,30 @@ from linebot.models import (
 
 
 # ---- ホームメニュー（QuickReply）を表示 ----
-def ask_home_menu():
+def ask_home_menu(data: str | None = None):
     """
-    役割: 作成/一覧/ヘルプへのエントリをQuick Replyで提示する。
+    作成/一覧/ヘルプ/終わる のQuick Replyを付けたホーム画面を返す。
+    - data によって上部テキストを出し分ける:
+        * "home=launch": 起動時の挨拶
+        * "home=help"  : ヘルプ文面
+        * それ以外     : 汎用メッセージ
     """
+
+    if data == "home=help":
+        text = "メニューをクリックするとイベントを作成したり、作成済のイベントのリストが見れるよ"
+    elif data == "home=launch":
+        text = "イベントボットだよ。呼んだ？"
+    else:
+        text = "やりたいことを選んでね"
+
     items = [
         QuickReplyButton(action=PostbackAction(label="イベント作成", data="home=create")),
         QuickReplyButton(action=PostbackAction(label="イベント一覧", data="home=list")),
-        QuickReplyButton(action=PostbackAction(label="ヘルプ", data="home=help")),
+        QuickReplyButton(action=PostbackAction(label="ヘルプ",     data="home=help")),
+        QuickReplyButton(action=PostbackAction(label="終わる",     data="home=exit")),
     ]
-    return TextSendMessage(text="やりたいことを選んでね。", quick_reply=QuickReply(items=items))
+
+    return TextSendMessage(text=text, quick_reply=QuickReply(items=items))
 
 
 # ---- イベント一覧を表示 ----
@@ -42,22 +56,24 @@ def build_event_list_carousel(events):
             title=title,
             text=text,
             # 列全体タップで詳細へ（本体タップ）
-            default_action=PostbackAction(label="開く", data=f"evt=detail&id={e.id}"),
+            default_action=PostbackAction(label="詳細", data=f"evt=detail&id={e.id}"),
             # LINE仕様で空配列は禁止のため、最低1つボタンを置く
             actions=[
-                PostbackAction(label="開く", data=f"evt=detail&id={e.id}")
+                PostbackAction(label="詳細", data=f"evt=detail&id={e.id}")
             ]
         ))
     return TemplateSendMessage(alt_text="イベント一覧", template=CarouselTemplate(columns=cols))
 
 
 # ---- イベント作成ウィザード内の [戻る] [はじめからやり直す] QuickReply ----
-def make_quick_reply(show_back: bool = False, show_reset: bool = False):
+def make_quick_reply(
+        show_back: bool = False, 
+        show_reset: bool = False, 
+        show_home: bool = True, 
+        show_exit: bool = True
+    ):
     """
     役割: Quick Reply のボタンを必要に応じて生成する。
-    - show_back=True で「戻る」(data='back')
-    - show_reset=True で「はじめからやり直す」(data='reset')
-    どちらも False の場合は None を返す（＝Quick Reply 非表示）
     """
     items = []
     if show_back:
@@ -67,6 +83,14 @@ def make_quick_reply(show_back: bool = False, show_reset: bool = False):
     if show_reset:
         items.append(
             QuickReplyButton(action=PostbackAction(label="はじめからやり直す", data="reset"))
+        )
+    if show_home:
+        items.append(
+            QuickReplyButton(action=PostbackAction(label="ホームに戻る", data="back_home"))
+        )
+    if show_exit:
+        items.append(
+            QuickReplyButton(action=PostbackAction(label="ボットを終了する", data="exit"))
         )
     return QuickReply(items=items) if items else None
 
@@ -86,7 +110,7 @@ def build_buttons(text: str, actions, alt_text: str = "選択メニュー", titl
 
 # ---- 日付ピッカー ----
 def ask_date_picker(text: str, data: str, min_dt=None, max_dt=None,
-                    with_back: bool = False, with_reset: bool = False):
+                    with_back: bool = False, with_reset: bool = False, with_home: bool = True, with_exit: bool = True):
     """
     役割: mode='date' の DatetimePicker を1つだけ持つメニューを返す。
     - data: 'pick=start_date' など識別子
@@ -99,7 +123,7 @@ def ask_date_picker(text: str, data: str, min_dt=None, max_dt=None,
     if max_dt:
         kwargs["max"] = utils._fmt_line_date(max_dt)
         
-    qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
+    qr = make_quick_reply(show_back=with_back, show_reset=with_reset, show_home=with_home, show_exit=with_exit)
     return TemplateSendMessage(
         alt_text="日付を選ぶ",
         template=ButtonsTemplate(
@@ -113,7 +137,7 @@ def ask_date_picker(text: str, data: str, min_dt=None, max_dt=None,
 def ask_time_menu(text: str, prefix: str,
                   times: tuple[str, ...] = ("09:00", "10:00", "19:00"),
                   allow_skip: bool = True,
-                  with_back: bool = False, with_reset: bool = False):
+                  with_back: bool = False, with_reset: bool = False, with_home: bool = True, with_exit: bool = True):
     """
     役割: 時刻候補（Postback）＋任意でスキップを提示する共通メニュー。
     ButtonsTemplate は actions 最大4件のため、候補数を丸める。
@@ -125,7 +149,7 @@ def ask_time_menu(text: str, prefix: str,
     if allow_skip:
         acts.append(PostbackAction(label="設定しない", data=f"time={prefix}&v=__skip__"))
 
-    qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
+    qr = make_quick_reply(show_back=with_back, show_reset=with_reset, show_home=with_home, show_exit=with_exit)
     return build_buttons(
         text=text,
         actions=acts,
@@ -136,7 +160,7 @@ def ask_time_menu(text: str, prefix: str,
 
 
 # ---- 終了指定方法メニュー ----
-def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False):
+def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False, with_home: bool = True, with_exit: bool = True):
     """
     役割: 「終了時刻を入力/所要時間を入力/スキップ（入力しない）」を選ばせる。
     """
@@ -145,7 +169,7 @@ def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False):
         PostbackAction(label="所要時間を入力", data="endmode=duration"),
         PostbackAction(label="設定しない", data="endmode=skip"),
     ]
-    qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
+    qr = make_quick_reply(show_back=with_back, show_reset=with_reset, show_home=with_home, show_exit=with_exit)
     
     return build_buttons(
         text="どっちを入力する？",
@@ -156,7 +180,7 @@ def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False):
     )
 
 # ---- 所要時間プリセットメニュー ----
-def ask_duration_menu(with_back: bool = False, with_reset: bool = False):
+def ask_duration_menu(with_back: bool = False, with_reset: bool = False, with_home: bool = True, with_exit: bool = True):
     """
     役割: 所要時間のプリセット（30/60/90分）と自由入力の案内を提示する。
     """
@@ -166,7 +190,7 @@ def ask_duration_menu(with_back: bool = False, with_reset: bool = False):
         PostbackAction(label="1時間30分", data="dur=90m"),
         PostbackAction(label="設定しない", data="dur=skip"),
     ]
-    qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
+    qr = make_quick_reply(show_back=with_back, show_reset=with_reset, show_home=with_home, show_exit=with_exit)
     return build_buttons(
         text="所要時間を入力するか、下から選んでね。\n例: 15分→【15】/ 1時間30分→【1:30】/ 2時間→【2h】",
         actions=acts,
@@ -177,13 +201,13 @@ def ask_duration_menu(with_back: bool = False, with_reset: bool = False):
 
 # ---- 定員入力メニュー ----
 def ask_capacity_menu(text: str = "定員を数字で入力してね",
-                      with_back: bool = False, with_reset: bool = False):
+                      with_back: bool = False, with_reset: bool = False, with_home: bool = True, with_exit: bool = True):
     """
     役割: 定員を数字で入力させる前提の案内と、スキップボタンのみを出す共通メニュー。
     - text: 文言を差し替えたい場合に指定
     """
-    acts = [PostbackAction(label="設定しない（スキップ）", data="cap=skip")]
-    qr = make_quick_reply(show_back=with_back, show_reset=with_reset)
+    acts = [PostbackAction(label="設定しない", data="cap=skip")]
+    qr = make_quick_reply(show_back=with_back, show_reset=with_reset, show_home=with_home, show_exit=with_exit)
     return build_buttons(
         text=text,
         actions=acts,
@@ -256,3 +280,54 @@ def render_event_list(events, style: str = "carousel"):
     # 将来: if style == "flex": return build_event_list_flex(events)
     # 将来: if style == "calendar": return build_event_list_calendar(events)
     return build_event_list_carousel(events)
+
+
+
+SUPPRESS_EXIT_ATTR = "_suppress_exit_qr"
+
+def suppress_exit_qr(reply):
+    """
+    この返信（単体 or list）には 'ボットを終了する' QR を付けないよう印を付ける。
+    """
+    if isinstance(reply, list):
+        for m in reply:
+            setattr(m, SUPPRESS_EXIT_ATTR, True)
+        return reply
+    setattr(reply, SUPPRESS_EXIT_ATTR, True)
+    return reply
+
+def _ensure_exit_on_message(msg):
+    """
+    単一メッセージに 'ボットを終了する' QuickReply を付与する。
+    （既存QRがあればマージ）
+    """
+    if getattr(msg, SUPPRESS_EXIT_ATTR, False):
+        return msg
+
+    if not hasattr(msg, "quick_reply"):
+        return msg  # 型が異なるなど、QRを持てない場合はそのまま
+
+    # 既存がなければ新規付与
+    if msg.quick_reply is None:
+        msg.quick_reply = make_quick_reply(show_exit=True)
+        return msg
+
+    # 既存があれば 'exit' が無いときだけ追加
+    items = list(getattr(msg.quick_reply, "items", []) or [])
+    has_exit = any(
+        isinstance(it.action, PostbackAction) and getattr(it.action, "data", "") == "exit"
+        for it in items
+    )
+    if not has_exit:
+        items.append(QuickReplyButton(action=PostbackAction(label="ボットを終了する", data="exit")))
+        msg.quick_reply.items = items
+    return msg
+
+
+def attach_exit_qr(reply):
+    """
+    返信オブジェクト（単体 or list）に対し、一括で '終了' QR を付与する。
+    """
+    if isinstance(reply, list):
+        return [_ensure_exit_on_message(m) for m in reply]
+    return _ensure_exit_on_message(reply)

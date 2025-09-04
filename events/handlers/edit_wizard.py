@@ -36,7 +36,7 @@ def handle_edit_text(user_id: str, text: str):
         if key in ("定員", "capacity", "cap"):
             draft.step = "cap"
             draft.save()
-            return ui.ask_capacity_menu(text="定員を数字で入力してね。定員なしにするなら「スキップ」を選んでね")
+            return ui.ask_capacity_menu(text="定員を数字で入力してね")
         if key in ("保存", "編集を保存", "save"):
             e = draft.event
             e.name = draft.name or e.name
@@ -101,7 +101,7 @@ def handle_edit_text(user_id: str, text: str):
     if draft.step == "cap":
         capacity = utils.parse_int_safe(text)
         if capacity is None or capacity <= 0:
-            return TextSendMessage(text="定員は1以上の整数を入力してね。定員なしにするなら「スキップ」を選んでね")
+            return TextSendMessage(text="定員は1以上の整数を入力してね")
         draft.capacity = capacity; draft.step = "menu"
         draft.save()
         return ui.ask_edit_menu()
@@ -161,7 +161,7 @@ def handle_edit_postback(user_id: str, scope_id: str, data: str, params: dict):
         draft.step = "cap"
         draft.save()
         return ui.ask_capacity_menu(
-            text="定員を数字で入力してね。定員なしにするなら「スキップ」を選んでね",
+            text="定員を数字で入力してね",
             with_back=True
         )
     
@@ -217,11 +217,11 @@ def handle_edit_postback(user_id: str, scope_id: str, data: str, params: dict):
             new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, v)
             if new_dt is None:
                 return TextSendMessage(
-                    text="時刻は HH:MM の形で入力するか、下から選んでね",quick_reply=ui.make_quick_reply(show_back=True)
+                    text="時刻は HH:MM の形で入力するか、下から選んでね", quick_reply=ui.make_quick_reply(show_back=True)
                 )
             if draft.start_time and new_dt <= draft.start_time:
                 return TextSendMessage(
-                    text="開始時刻よりも後の時間を設定してね",quick_reply=ui.make_quick_reply(show_back=True)
+                    text="開始時刻よりも後の時間を設定してね", quick_reply=ui.make_quick_reply(show_back=True)
                 )
             draft.end_time = new_dt; draft.end_time_has_clock = True; draft.step = "menu"
             draft.save()

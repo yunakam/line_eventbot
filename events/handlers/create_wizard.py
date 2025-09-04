@@ -3,7 +3,7 @@
 import re
 import logging
 from linebot.models import TextSendMessage
-from ..models import Event, EventDraft
+from ..models import Event, EventDraft, EventEditDraft
 from .. import ui, utils
 
 logger = logging.getLogger(__name__)
@@ -17,12 +17,15 @@ def _go_back_one_step(draft: "EventDraft"):
     if draft.step == "title":
         return [
             TextSendMessage(text="これ以上は戻れないよ"),
-            TextSendMessage(text="イベントのタイトルは？"),
+            TextSendMessage(
+                text="イベントのタイトルを送信してね",
+                quick_reply=ui.make_quick_reply(show_back=True, show_reset=True, show_exit=True)
+            ),
         ]
         
     if draft.step == "start_date":
         draft.step = "title"; draft.save()
-        return TextSendMessage(text="イベントのタイトルは？")
+        return TextSendMessage(text="イベントのタイトルを送信してね")
     
     if draft.step == "start_time":
         draft.start_time = None; draft.step = "start_date"; draft.save()
@@ -93,9 +96,10 @@ def _finalize_event(draft: "EventDraft"):
         f"{end_text}\n"
         f"{cap_text}"
     )
+
+    draft.delete()
     
-    msg = TextSendMessage(text=summary)
-    draft.delete()  # 確定後はドラフトを掃除
+    msg = TextSendMessage(text=summary, quick_reply=ui.make_quick_reply(show_home=True, show_exit=True))
     return msg
 
 
@@ -155,14 +159,14 @@ def handle_wizard_text(user_id: str, text: str):
     if draft.step == "cap":
         capacity = utils.parse_int_safe(text)
         if capacity is None or capacity <= 0:
-            return TextSendMessage(text="定員は1以上の整数を入力してね。定員なしにするなら「スキップ」を選んでね")
+            return TextSendMessage(text="定員は1以上の整数を入力してね")
         draft.capacity = capacity; draft.step = "done"; draft.save()
         return _finalize_event(draft)
 
     return None
 
 
-# --- ポストバック処理（元: views.handle_wizard_postback） ---
+# --- ポストバック処理 ---
 def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str):
     """
     作成ウィザードのPostback（ボタン選択・DatetimePickerの戻り）を処理する。
@@ -178,23 +182,34 @@ def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str)
         except Exception: 
             pass
         draft.scope_id = scope_id; draft.save()
-        return TextSendMessage(text="イベントのタイトルは？")
+        return TextSendMessage(
+            text="イベントのタイトルを送信してね",
+            quick_reply=ui.make_quick_reply(show_home=True, show_exit=True)
+        )
 
-    # イベント一覧
     if data == "home=list":
         from ..models import Event
         qs = Event.objects.filter(scope_id=scope_id).order_by("-id")[:10]
-        return ui.render_event_list(qs)  # ← 統一入口
+        return ui.render_event_list(qs)
 
         if not qs:
-            return TextSendMessage(text="作成したイベントはまだないよ")
+            return TextSendMessage(text="作成されたイベントはまだないよ")
         lines = [f"{e.id}: {e.name}" for e in qs]
         return TextSendMessage(text="イベント一覧:\n" + "\n".join(lines))
 
     if data == "home=help":
-        return TextSendMessage(text="イベント作成や編集はメニューから。作成→タイトル→日付→開始→終了指定→定員の順で進む。")
+        return ui.ask_home_menu(data)
 
-
+    if data == "home=exit":
+        # 作成中のドラフトを破棄する
+        EventDraft.objects.filter(user_id=user_id).delete()
+        # 編集ドラフトも破棄
+        EventEditDraft.objects.filter(user_id=user_id).delete()
+        
+        return TextSendMessage(
+            text="また必要になったら「ボット」と呼んでね👋"
+        )
+    
     # --- 以降、ドラフト必須 --------
     
     # 作成ウィザードの処理
@@ -211,8 +226,18 @@ def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str)
         try: draft.end_time_has_clock = False
         except Exception: pass
         draft.save()
-        return TextSendMessage(text="最初からやり直すよ。\nイベントのタイトルは？")
+        return TextSendMessage(
+                    text="イベントのタイトルを送信してね",
+                    quick_reply=ui.make_quick_reply()
+                ),
 
+    if data == "exit":
+        # 作成ドラフトを破棄して終了
+        draft.delete()
+        return TextSendMessage(
+            text="また必要になったら「ボット」と呼んでね👋"
+        )
+        
     logger.debug("wizard postback", extra={"step": draft.step, "data": data})
 
     # 開始日選択（DatetimePicker）
