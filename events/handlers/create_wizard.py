@@ -187,16 +187,6 @@ def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str)
             quick_reply=ui.make_quick_reply(show_home=True, show_exit=True)
         )
 
-    if data == "home=list":
-        from ..models import Event
-        qs = Event.objects.filter(scope_id=scope_id).order_by("-id")[:10]
-        return ui.render_event_list(qs)
-
-        if not qs:
-            return TextSendMessage(text="作成されたイベントはまだないよ")
-        lines = [f"{e.id}: {e.name}" for e in qs]
-        return TextSendMessage(text="イベント一覧:\n" + "\n".join(lines))
-
     if data == "home=help":
         return ui.ask_home_menu(data)
 
