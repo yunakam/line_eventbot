@@ -300,7 +300,6 @@ def render_event_list(events, style: str = "carousel"):
     return build_event_list_carousel(events)
 
 
-
 SUPPRESS_EXIT_ATTR = "_suppress_exit_qr"
 
 def suppress_exit_qr(reply):

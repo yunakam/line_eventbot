@@ -2,9 +2,11 @@
 import os
 import re
 import unicodedata
-from datetime import timedelta, datetime
+from datetime import date, time, timedelta, datetime
 
-from django.http import HttpResponse
+from django.apps import apps
+from django.http import HttpResponse, JsonResponse, HttpResponseBadRequest
+from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.core.exceptions import ImproperlyConfigured
 from django.conf import settings
@@ -12,6 +14,8 @@ from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
 from linebot import LineBotApi, WebhookParser
+import json
+import requests  
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
     PostbackEvent,
@@ -46,14 +50,23 @@ def _is_home_menu_trigger(text: str) -> bool:
 
 def get_line_clients():
     """
-    環境変数やsettingsからアクセストークン／チャネルシークレットを読み
-    LINE SDKクライアントを返す
+    Messaging API（Bot通知）用のクライアントを返す。
     """
-    token  = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", None) or os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-    secret = getattr(settings, "LINE_CHANNEL_SECRET", None)       or os.getenv("LINE_CHANNEL_SECRET")
+    token = (
+        getattr(settings, "MESSAGING_CHANNEL_ACCESS_TOKEN", None)
+        or getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", None)
+        or os.getenv("MESSAGING_CHANNEL_ACCESS_TOKEN")
+        or os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    )
+    secret = (
+        getattr(settings, "MESSAGING_CHANNEL_SECRET", None)
+        or getattr(settings, "LINE_CHANNEL_SECRET", None)
+        or os.getenv("MESSAGING_CHANNEL_SECRET")
+        or os.getenv("LINE_CHANNEL_SECRET")
+    )
 
     if not token or not secret:
-        raise ImproperlyConfigured("LINEのトークン/シークレットが未設定である。")
+        raise ImproperlyConfigured("LINEのトークン/シークレットが未設定だよ")
 
     return LineBotApi(token), WebhookParser(secret)
 
@@ -121,8 +134,8 @@ def callback(request):
                     continue
 
             # それ以外のテキストは全てメニューへ誘導
-            line_bot_api.reply_message(ev.reply_token, ui.ask_home_menu("home=help"))
-            continue
+            # line_bot_api.reply_message(ev.reply_token, ui.ask_home_menu("home=help"))
+            # continue
 
 
         # --- Postback ---        
@@ -213,3 +226,103 @@ def callback(request):
 
 
     return HttpResponse(status=200)
+
+
+# =========================
+# LIFF 用の最小ビュー
+# =========================
+
+def liff_entry(request):
+    """
+    LIFFエントリのHTMLを返す。
+    テンプレート 'events/liff_app.html' に settings.LIFF_ID を埋め込み、
+    フロントで liff.init({ liffId }) を行う。
+    """
+    return render(request, 'events/liff_app.html', {
+        'LIFF_ID': getattr(settings, 'LIFF_ID', ''),
+    })
+
+@csrf_exempt  # まず通すためCSRF免除。同一オリジンでCSRFトークン送出できるなら外してよい。
+def verify_idtoken(request):
+    """
+    クライアント（LIFF）のIDトークンをサーバで検証する。
+    - POST JSON: { "id_token": "<string>" }
+    - 検証エンドポイント: https://api.line.me/oauth2/v2.1/verify
+      client_id は settings.MINIAPP_CHANNEL_ID を使用する。
+    """
+    if request.method != 'POST':
+        return HttpResponseBadRequest('invalid method')
+
+    try:
+        body = json.loads(request.body.decode('utf-8'))
+        id_token = body.get('id_token')
+        if not id_token:
+            return HttpResponseBadRequest('id_token is required')
+
+        res = requests.post(
+            'https://api.line.me/oauth2/v2.1/verify',
+            data={'id_token': id_token, 'client_id': getattr(settings, 'MINIAPP_CHANNEL_ID', '')},
+            timeout=10
+        )
+        data = res.json()
+        if res.status_code != 200:
+            # 例: {"error":"invalid_token","error_description":"The token is invalid"}
+            return JsonResponse({'ok': False, 'reason': data}, status=400)
+
+        # sub（userId）, name, picture 等が含まれる
+        return JsonResponse({'ok': True, 'payload': data})
+    except Exception as e:
+        return JsonResponse({'ok': False, 'reason': str(e)}, status=500)
+
+def _to_str(v):
+    """date/datetime/time は ISO っぽく、それ以外は安全に str 化"""
+    if isinstance(v, (datetime, date, time)):
+        try:
+            return v.isoformat()
+        except Exception:
+            return str(v)
+    return v if isinstance(v, (int, float, bool)) else (str(v) if v is not None else None)
+
+def events_list(request):
+    """
+    イベント一覧。実在フィールドのみで order_by し、直列化も安全に行う。
+    モデル未整備やフィールド差異があっても 500 にしない。
+    """
+    if request.method != 'GET':
+        return HttpResponseBadRequest('invalid method')
+
+    # 1) Event モデル取得（存在しないなら空配列で返す）
+    try:
+        EventModel = apps.get_model('events', 'Event')
+    except LookupError:
+        return JsonResponse({'ok': True, 'items': []}, status=200)
+
+    # 2) 利用可能なフィールド名の集合
+    fields = {f.name for f in EventModel._meta.get_fields() if hasattr(f, 'attname')}
+
+    # 3) 安全な並び順（存在するものだけ適用）
+    order_candidates = ['date', 'event_date', 'start_time', 'id']
+    order_keys = [k for k in order_candidates if k in fields]
+    try:
+        qs = EventModel.objects.all()
+        if order_keys:
+            qs = qs.order_by(*order_keys)
+        qs = qs[:100]
+    except Exception as ex:
+        # 並び替え時にエラーが出ても空で返す（500にしない）
+        return JsonResponse({'ok': True, 'items': []}, status=200)
+
+    # 4) 直列化（あるものだけ詰める）
+    prefer = ['id', 'name', 'title', 'date', 'event_date', 'start_time', 'end_time', 'capacity']
+    items = []
+    for e in qs:
+        obj = {}
+        for key in prefer:
+            if key in fields:
+                obj[key] = _to_str(getattr(e, key, None))
+        # name/title の補完
+        if 'name' not in obj and 'title' in obj:
+            obj['name'] = obj.get('title')
+        items.append(obj)
+
+    return JsonResponse({'ok': True, 'items': items}, status=200)
