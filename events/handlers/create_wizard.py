@@ -17,44 +17,41 @@ def _go_back_one_step(draft: "EventDraft"):
     if draft.step == "title":
         return [
             TextSendMessage(text="これ以上は戻れないよ"),
-            TextSendMessage(
-                text="イベントのタイトルを送信してね",
-                quick_reply=ui.make_quick_reply(show_back=True, show_reset=True, show_exit=True)
-            ),
+            ui.msg("ask_title"),
         ]
         
     if draft.step == "start_date":
         draft.step = "title"; draft.save()
-        return TextSendMessage(text="イベントのタイトルを送信してね")
-    
+        return ui.msg("ask_title")
+
     if draft.step == "start_time":
         draft.start_time = None; draft.step = "start_date"; draft.save()
-        return ui.ask_date_picker("イベントの日付を教えてね", data="pick=start_date", with_back=True, with_reset=True)
+        return ui.ask_date_picker(data="pick=start_date")
     
     if draft.step == "end_mode":
         draft.end_time = None; draft.capacity = None
         try: draft.end_time_has_clock = False
         except Exception: pass
         draft.step = "start_time"; draft.save()
-        return ui.ask_time_menu("開始時刻を HH:MM の形で入力するか、下から選んでね", prefix="start", with_back=True, with_reset=True)
+        return ui.ask_time_menu(prefix="start")
     
     if draft.step == "end_time":
         draft.end_time = None
         try: draft.end_time_has_clock = False
         except Exception: pass
         draft.step = "end_mode"; draft.save()
-        return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+        return ui.ask_end_mode_menu()
     
     if draft.step == "duration":
         draft.end_time = None
         try: draft.end_time_has_clock = False
         except Exception: pass
         draft.step = "end_mode"; draft.save()
-        return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+        return ui.ask_end_mode_menu()
     
     if draft.step == "cap":
         draft.capacity = None; draft.step = "end_mode"; draft.save()
-        return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+        return ui.ask_end_mode_menu()
 
     return TextSendMessage(text="これ以上は戻れないよ")
 
@@ -99,7 +96,7 @@ def _finalize_event(draft: "EventDraft"):
 
     draft.delete()
     
-    msg = TextSendMessage(text=summary, quick_reply=ui.make_quick_reply(show_home=True, show_exit=True))
+    msg = TextSendMessage(text=summary, quick_reply=ui.make_quick_reply())
     return msg
 
 
@@ -117,50 +114,55 @@ def handle_wizard_text(user_id: str, text: str):
     # タイトル → 開始日
     if draft.step == "title":
         if not text:
-            return TextSendMessage(text="イベントのタイトルを入力してね")
-        draft.name = text; draft.step = "start_date"; draft.save()
-        return ui.ask_date_picker("イベントの日付を教えてね", data="pick=start_date", with_back=True, with_reset=True)
+            ui.msg("ask_title")
+        draft.name = text; draft.step = "start_date"
+        draft.save()
+        return ui.ask_date_picker(data="pick=start_date")
 
     # 開始時刻 手入力
     if draft.step == "start_time":
         new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, text)
         if new_dt is None:
-            return TextSendMessage(text="時刻は HH:MM 形式で入力してね（例 09:00）")
-        draft.start_time = new_dt; draft.start_time_has_clock = True; draft.step = "end_mode"; draft.save()
-        return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+            return ui.msg("invalid_time")
+        draft.start_time = new_dt
+        draft.start_time_has_clock = True
+        draft.step = "end_mode"
+        draft.save()
+        return ui.ask_end_mode_menu()
 
     # 終了時刻 手入力
     if draft.step == "end_time":
         new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, text)
         if new_dt is None:
-            return TextSendMessage(text="時刻は HH:MM 形式で入力してね（例 19:00）")
+            return ui.msg("invalid_time")
         if draft.start_time and new_dt <= draft.start_time:
-            return TextSendMessage(text="終了が開始より前（同時刻含む）になっているよ。もう一度入力してね")
+            return ui.msg("invalid_end_time")
         draft.end_time = new_dt
         try: draft.end_time_has_clock = True
         except Exception: pass
         draft.step = "cap"; draft.save()
-        return ui.ask_capacity_menu(with_back=True, with_reset=True)
+        return ui.ask_capacity_menu()
 
     # 所要時間 手入力
     if draft.step == "duration":
         delta = utils.parse_duration_to_delta(text)
         if not delta or delta.total_seconds() <= 0:
-            return TextSendMessage(text="所要時間は 1:30 / 90m / 2h / 120 などで入力してね")
-        if not draft.start_time:
-            return TextSendMessage(text="先に開始日時を選んでね")
+            return ui.msg("invalid_duration")
         draft.end_time = draft.start_time + delta
         try: draft.end_time_has_clock = False
         except Exception: pass
-        draft.step = "cap"; draft.save()
-        return ui.ask_capacity_menu(with_back=True, with_reset=True)
+        draft.step = "cap"
+        draft.save()
+        return ui.ask_capacity_menu()
 
     # 定員 手入力
     if draft.step == "cap":
         capacity = utils.parse_int_safe(text)
         if capacity is None or capacity <= 0:
-            return TextSendMessage(text="定員は1以上の整数を入力してね")
-        draft.capacity = capacity; draft.step = "done"; draft.save()
+            return ui.msg("invalid_cap")
+        draft.capacity = capacity
+        draft.step = "done"
+        draft.save()
         return _finalize_event(draft)
 
     return None
@@ -176,16 +178,16 @@ def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str)
     # ホームメニュー（ドラフトの有無に関係なく動く）
     if data == "home=create":
         draft, _ = EventDraft.objects.get_or_create(user_id=user_id, defaults={"step": "title"})
-        draft.step = "title"; draft.name = ""; draft.start_time = None; draft.end_time = None; draft.capacity = None
+        draft.step = "title"; draft.name = ""
+        draft.start_time = None
+        draft.end_time = None
+        draft.capacity = None
         try: 
             draft.end_time_has_clock = False
         except Exception: 
             pass
         draft.scope_id = scope_id; draft.save()
-        return TextSendMessage(
-            text="イベントのタイトルを送信してね",
-            quick_reply=ui.make_quick_reply(show_home=True, show_exit=True)
-        )
+        return ui.msg("ask_title")
 
     if data == "home=help":
         return ui.ask_home_menu(data)
@@ -195,9 +197,7 @@ def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str)
         EventDraft.objects.filter(user_id=user_id).delete()
         EventEditDraft.objects.filter(user_id=user_id).delete()       
          
-        return TextSendMessage(
-            text="また必要になったら「ボット」と呼んでね👋"
-        )
+        return ui.msg("exit")
     
     # --- 以降、ドラフト必須 --------
     
@@ -211,31 +211,32 @@ def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str)
         return _go_back_one_step(draft)
 
     if data == "reset":
-        draft.step = "title"; draft.name = ""; draft.start_time = None; draft.end_time = None; draft.capacity = None
+        draft.step = "title"; draft.name = ""
+        draft.start_time = None
+        draft.end_time = None
+        draft.capacity = None
         try: draft.end_time_has_clock = False
         except Exception: pass
         draft.save()
-        return TextSendMessage(
-                    text="イベントのタイトルを送信してね",
-                    quick_reply=ui.make_quick_reply()
-                ),
+        return ui.msg("ask_title")
 
     if data == "exit":
         # 作成ドラフトを破棄して終了
         draft.delete()
-        return TextSendMessage(
-            text="また必要になったら「ボット」と呼んでね👋"
-        )
+        return ui.msg("exit")
         
-    logger.debug("wizard postback", extra={"step": draft.step, "data": data})
-
+    logger.debug("wizard postback step=%s data=%s", draft.step, data)
+    
     # 開始日選択（DatetimePicker）
     if data == "pick=start_date" and draft.step == "start_date":
         d0 = utils.extract_dt_from_params_date_only(params)
         if not d0:
-            return TextSendMessage(text="日付が取得できなかったよ。もう一度選んでね")
-        draft.start_time = d0; draft.start_time_has_clock = False; draft.step = "start_time"; draft.save()
-        return ui.ask_time_menu("開始時刻を HH:MM の形で入力するか、下から選んでね", prefix="start", with_back=True, with_reset=True)
+            return ui.msg("invalid_date")
+        draft.start_time = d0
+        draft.start_time_has_clock = False
+        draft.step = "start_time"
+        draft.save()
+        return ui.ask_time_menu(prefix="start")
 
     # 時刻候補（start/end）
     m = re.search(r"time=(start|end)&v=([^&]+)$", data or "")
@@ -244,52 +245,61 @@ def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str)
 
         if kind == "start" and draft.step == "start_time":
             if v == "__skip__":
-                draft.start_time_has_clock = False; draft.step = "end_mode"; draft.save()
-                return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+                draft.start_time_has_clock = False
+                draft.step = "end_mode"
+                draft.save()
+                return ui.ask_end_mode_menu()
             new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, v)
             if new_dt is None:
-                return TextSendMessage(text="時刻の形式が不正だよ。もう一度選ぶか「HH:MM」で入力してね")
-            draft.start_time = new_dt; draft.start_time_has_clock = True; draft.step = "end_mode"; draft.save()
-            return ui.ask_end_mode_menu(with_back=True, with_reset=True)
+                return ui.msg("invalid_time")
+            draft.start_time = new_dt
+            draft.start_time_has_clock = True
+            draft.step = "end_mode"
+            draft.save()
+            return ui.ask_end_mode_menu()
 
         if kind == "end" and draft.step == "end_time":
             if v == "__skip__":
                 draft.end_time = None
                 try: draft.end_time_has_clock = False
                 except Exception: pass
-                draft.step = "cap"; draft.save()
-                return ui.ask_capacity_menu(with_back=True, with_reset=True)
+                draft.step = "cap"
+                draft.save()
+                return ui.ask_capacity_menu()
             new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, v)
             if new_dt is None:
-                return TextSendMessage(text="時刻の形式が不正だよ。もう一度選ぶか「HH:MM」で入力してね")
+                return ui.msg("invalid_time")
             if draft.start_time and new_dt <= draft.start_time:
-                return TextSendMessage(text="開始時刻よりも後の時間を設定してね")
+                return ui.msg("invalid_end_time")
             draft.end_time = new_dt
             try: draft.end_time_has_clock = True
             except Exception: pass
-            draft.step = "cap"; draft.save()
-            return ui.ask_capacity_menu(with_back=True, with_reset=True)
+            draft.step = "cap"
+            draft.save()
+            return ui.ask_capacity_menu()
 
     # 終了の指定方法
     if data == "endmode=enddt":
         draft.end_time = utils.hhmm_to_utc_on_same_day(draft.start_time, "00:00")
         try: draft.end_time_has_clock = False
         except Exception: pass
-        draft.step = "end_time"; draft.save()
-        return ui.ask_time_menu("終了時刻を HH:MM の形で入力するか、下から選んでね", prefix="end", with_back=True, with_reset=True)
-
+        draft.step = "end_time"
+        draft.save()
+        return ui.ask_time_menu(prefix="end")
     if data == "endmode=duration":
         try: draft.end_time_has_clock = False
         except Exception: pass
-        draft.step = "duration"; draft.save()
-        return ui.ask_duration_menu(with_back=True, with_reset=True)
+        draft.step = "duration"
+        draft.save()
+        return ui.ask_duration_menu()
 
     if data == "endmode=skip":
         draft.end_time = None
         try: draft.end_time_has_clock = False
         except Exception: pass
-        draft.step = "cap"; draft.save()
-        return ui.ask_capacity_menu(with_back=True, with_reset=True)
+        draft.step = "cap"
+        draft.save()
+        return ui.ask_capacity_menu()
 
     # 所要時間プリセット/スキップ
     if data.startswith("dur=") and draft.step == "duration":
@@ -298,17 +308,18 @@ def handle_wizard_postback(user_id: str, data: str, params: dict, scope_id: str)
             draft.end_time = None
             try: draft.end_time_has_clock = False
             except Exception: pass
-            draft.step = "cap"; draft.save()
-            return ui.ask_capacity_menu(with_back=True, with_reset=True)
+            draft.step = "cap"
+            draft.save()
+            return ui.ask_capacity_menu()
 
         delta = utils.parse_duration_to_delta(code)
         if not delta or delta.total_seconds() <= 0:
-            return TextSendMessage(text="所要時間の形式が不正だよ。もう一度選んでね")
+            return ui.msg("invalid_duration")
         draft.end_time = draft.start_time + delta
         try: draft.end_time_has_clock = False
         except Exception: pass
         draft.step = "cap"; draft.save()
-        return ui.ask_capacity_menu(with_back=True, with_reset=True)
+        return ui.ask_capacity_menu()
 
     # 定員スキップ
     if data == "cap=skip" and draft.step == "cap":

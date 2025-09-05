@@ -1,7 +1,7 @@
 # 役割: 「一覧/詳細/編集開始」などのコマンドと、カルーセルからのショートカットを処理する
 
 import re
-from linebot.models import TextSendMessage, TemplateSendMessage
+from linebot.models import TextSendMessage
 from ..models import Event, EventEditDraft
 from .. import ui
 from .. import policies
@@ -39,7 +39,7 @@ def handle_evt_shortcut(user_id: str, scope_id: str, data: str):
             "start_time": e.start_time,
             "start_time_has_clock": getattr(e, "start_time_has_clock", True),
             "end_time": e.end_time,
-            "end_time_has_clock": True,
+            "end_time_has_clock": bool(e.end_time),
             "capacity": e.capacity,
             "scope_id": scope_id,
         }

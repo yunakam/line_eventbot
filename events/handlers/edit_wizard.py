@@ -20,7 +20,7 @@ def handle_edit_text(user_id: str, text: str):
     # タイトル編集
     if draft.step == "title":
         if not text:
-            return TextSendMessage(text="タイトルを入力してね")
+            return ui.msg("ask_title", qr_override=dict(show_reset=False))
         draft.name = text
         draft.step = "menu"
         draft.save()
@@ -30,7 +30,7 @@ def handle_edit_text(user_id: str, text: str):
     if draft.step == "start_time":
         new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, text)
         if new_dt is None:
-            return TextSendMessage(text="時刻は HH:MM 形式で入力してね（例 09:00）")
+            return ui.msg("invalid_time", qr_override=dict(show_reset=False))
         draft.start_time = new_dt; draft.start_time_has_clock = True; draft.step = "menu"
         draft.save()
         return ui.ask_edit_menu()
@@ -39,9 +39,9 @@ def handle_edit_text(user_id: str, text: str):
     if draft.step == "end_time":
         new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, text)
         if new_dt is None:
-            return TextSendMessage(text="時刻は HH:MM 形式で入力してね（例 19:00）")
+            return ui.msg("invalid_time", qr_override=dict(show_reset=False))
         if draft.start_time and new_dt <= draft.start_time:
-            return TextSendMessage(text="開始時刻よりも後の時間を入力してね")
+            return ui.msg("invalid_end_time", qr_override=dict(show_reset=False))
         draft.end_time = new_dt
         draft.end_time_has_clock = True
         draft.step = "menu"
@@ -52,9 +52,7 @@ def handle_edit_text(user_id: str, text: str):
     if draft.step == "duration":
         delta = utils.parse_duration_to_delta(text)
         if not delta or delta.total_seconds() <= 0:
-            return TextSendMessage(text="所要時間は 1:30 / 90m / 2h / 120 などの形で入力してね。")
-        if not draft.start_time:
-            return TextSendMessage(text="先に開始日時を設定してね")
+            return ui.msg("invalid_duration", qr_override=dict(show_reset=False))
         draft.end_time = draft.start_time + delta; draft.end_time_has_clock = False; draft.step = "menu"
         draft.save()
         return ui.ask_edit_menu()
@@ -63,7 +61,7 @@ def handle_edit_text(user_id: str, text: str):
     if draft.step == "cap":
         capacity = utils.parse_int_safe(text)
         if capacity is None or capacity <= 0:
-            return TextSendMessage(text="定員は1以上の整数を入力してね")
+            return ui.msg("invalid_cap", qr_override=dict(show_reset=False))
         draft.capacity = capacity; draft.step = "menu"
         draft.save()
         return ui.ask_edit_menu()
@@ -89,48 +87,32 @@ def handle_edit_postback(user_id: str, scope_id: str, data: str, params: dict):
     if data == "edit=title":
         draft.step = "title"
         draft.save()
-        return TextSendMessage(
-            text="タイトルを入力してね",
-            quick_reply=ui.make_quick_reply(show_back=True)
-        )
+        return ui.msg("ask_title", qr_override=dict(show_back=True))
 
     if data == "edit=start_date":
         draft.step = "start_date"
         draft.save()
-        return ui.ask_date_picker(
-            text="日付を選んでね", 
-            data="pick=start_date",
-            with_back=True
-        )
+        return ui.ask_date_picker(data="pick=start_date", with_reset=False)
 
     if data == "edit=start_time":
-        if not draft.start_time:
-            return TextSendMessage(text="先に日付を設定してね")
         draft.step = "start_time"
         draft.save()
-        return ui.ask_time_menu(
-            text="開始時刻を HH:MM で入力するか、下から選んでね", 
-            prefix="start",
-            with_back=True
-        )
+        return ui.ask_time_menu(prefix="start", with_reset=False)
 
     if data == "edit=end":
         draft.step = "end_mode"
         draft.save()
-        return ui.ask_end_mode_menu(with_back=True)
+        return ui.ask_end_mode_menu(with_reset=False)
 
     if data == "edit=cap":
         draft.step = "cap"
         draft.save()
-        return ui.ask_capacity_menu(
-            text="定員を数字で入力してね",
-            with_back=True
-        )
+        return ui.ask_capacity_menu(with_reset=False)
     
     if data == "edit=cancel":
         draft.delete()
         return [
-            TextSendMessage(text="編集を中止したよ"),
+            ui.msg("edit.canceled"),
             ui.ask_home_menu()
         ]
 
@@ -150,7 +132,7 @@ def handle_edit_postback(user_id: str, scope_id: str, data: str, params: dict):
     if data == "pick=start_date" and draft.step == "start_date":
         d0 = utils.extract_dt_from_params_date_only(params)
         if not d0:
-            return TextSendMessage(text="開始日がわからなかったよ。もう一度選んでね")
+            return ui.msg("invalid_date", qr_override=dict(show_reset=False))
         draft.start_time = d0
         draft.start_time_has_clock = False
         draft.step = "start_time"
@@ -169,7 +151,7 @@ def handle_edit_postback(user_id: str, scope_id: str, data: str, params: dict):
                 return ui.ask_edit_menu()
             new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, v)
             if new_dt is None:
-                return TextSendMessage(text="時刻は HH:MM の形で入力するか、下から選んでね")
+                return ui.msg("ask_time", qr_override=dict(show_reset=False))
             draft.start_time = new_dt
             draft.start_time_has_clock = True
             draft.step = "menu"
@@ -181,13 +163,9 @@ def handle_edit_postback(user_id: str, scope_id: str, data: str, params: dict):
                 return ui.ask_edit_menu()
             new_dt = utils.hhmm_to_utc_on_same_day(draft.start_time, v)
             if new_dt is None:
-                return TextSendMessage(
-                    text="時刻は HH:MM の形で入力するか、下から選んでね", quick_reply=ui.make_quick_reply(show_back=True)
-                )
+                return ui.msg("invalid_time", qr_override=dict(show_reset=False))
             if draft.start_time and new_dt <= draft.start_time:
-                return TextSendMessage(
-                    text="開始時刻よりも後の時間を設定してね", quick_reply=ui.make_quick_reply(show_back=True)
-                )
+                return ui.msg("invalid_end_time", qr_override=dict(show_reset=False))
             draft.end_time = new_dt; draft.end_time_has_clock = True; draft.step = "menu"
             draft.save()
             return ui.ask_edit_menu()
@@ -195,17 +173,21 @@ def handle_edit_postback(user_id: str, scope_id: str, data: str, params: dict):
     # 終了の指定方法（編集）
     if data == "endmode=enddt":
         draft.end_time = utils.hhmm_to_utc_on_same_day(draft.start_time, "00:00")
-        draft.end_time_has_clock = False; draft.step = "end_time"
+        draft.end_time_has_clock = False
+        draft.step = "end_time"
         draft.save()
-        return ui.ask_time_menu("終了時刻を HH:MM で入力するか、下から選んでね", prefix="end", with_back=True)
+        return ui.ask_time_menu(prefix="end", with_reset=False)
 
     if data == "endmode=duration":
-        draft.end_time_has_clock = False; draft.step = "duration"
+        draft.end_time_has_clock = False
+        draft.step = "duration"
         draft.save()
-        return ui.ask_duration_menu(with_back=True)
+        return ui.ask_duration_menu(with_reset=False)
 
     if data == "endmode=skip":
-        draft.end_time = None; draft.end_time_has_clock = False; draft.step = "menu"
+        draft.end_time = None
+        draft.end_time_has_clock = False
+        draft.step = "menu"
         draft.save()
         return ui.ask_edit_menu()
 
@@ -218,10 +200,7 @@ def handle_edit_postback(user_id: str, scope_id: str, data: str, params: dict):
             return ui.ask_edit_menu()
         delta = utils.parse_duration_to_delta(code)
         if not delta or delta.total_seconds() <= 0:
-            return TextSendMessage(
-                text="所要時間を入力するか、下から選んでね\n入力例： 1:30 / 90m / 2h / 120",
-                quick_reply=ui.make_quick_reply(show_back=True)
-            )
+            return ui.ask_duration_menu(with_reset=False)
         draft.end_time = draft.start_time + delta; draft.end_time_has_clock = False; draft.step = "menu"
         draft.save()
         return ui.ask_edit_menu()

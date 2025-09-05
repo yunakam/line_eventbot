@@ -46,8 +46,8 @@ def build_event_list_carousel(events):
     """
     events = list(events or [])[:10]  # 列数ガード
     if not events:
-        return TextSendMessage(text="作成したイベントはまだないよ")
-
+        return msg("list.empty")
+    
     cols = []
     for e in events:
         title = (e.name or "（無題）")[:40]  # タイトル長ガード
@@ -95,6 +95,138 @@ def make_quick_reply(
         )
     return QuickReply(items=items) if items else None
 
+
+# ========= メッセージテンプレート =========
+
+_MESSAGE_TEMPLATES = {
+    # 汎用
+    "home.welcome": {
+        "text": "イベントボットだよ。呼んだ？",
+        "qr": dict(show_home=False, show_exit=True)
+    },
+    "home.back": {
+        "text": "やりたいことを選んでね",
+        "qr": dict(show_home=True, show_exit=True)
+    },
+    "exit": {
+        "text": "また必要になったら「ボット」と呼んでね👋",
+        "qr": dict(show_home=False, show_exit=False)
+    },
+    "home.back": {
+        "text": "やりたいことを選んでね",
+        "qr": dict(show_home=True, show_exit=True)
+    },
+        
+    # 作成/編集ウィザード共通
+    "ask_title": {
+        "text": "イベントのタイトルを送信してね",
+        "qr": dict(show_back=False, show_reset=False, show_home=True, show_exit=True)
+    },
+    "invalid_date": {
+        "text": "日付が取得できなかったよ。もう一度選んでね",
+        "qr": dict(show_back=True, show_reset=True, show_home=True, show_exit=True)
+    },
+    "invalid_time": {
+        "text": "時刻は HH:MM 形式で入力してね（例 09:00）",
+        "qr": dict(show_back=True, show_reset=True, show_home=True, show_exit=True)
+    },
+    "invalid_end_time": {
+        "text": "終了が開始より前（同時刻含む）になっているよ。もう一度入力してね）",
+        "qr": dict(show_back=True, show_reset=True, show_home=True, show_exit=True)
+    },
+    "invalid_duration": {
+        "text": "所要時間は 1:30 / 90m / 2h / 120 などで入力してね",
+        "qr": dict(show_back=True, show_reset=True, show_home=True, show_exit=True)
+    },    
+    "invalid_cap": {
+        "text": "定員は1以上の整数を入力してね",
+        "qr": dict(show_back=True, show_reset=True, show_home=True, show_exit=True)
+    },   
+
+    # 一覧・詳細
+    "list.empty": {
+        "text": "作成したイベントはまだないよ",
+        "qr": dict(show_home=True, show_exit=True)
+    },
+    "detail.not_found": {
+        "text": "不正なIDだよ",
+        "qr": dict(show_home=True, show_exit=True)
+    },
+
+    # 参加/キャンセル
+    "rsvp.joined": {
+        "text": "{event_name} に参加登録したよ",
+        "qr": dict(show_home=True, show_exit=True)
+    },
+    "rsvp.canceled": {
+        "text": "{event_name} の参加をキャンセルしたよ",
+        "qr": dict(show_home=True, show_exit=True)
+    },
+
+    # 権限・バリデーション
+    "auth.forbidden": {
+        "text": "この操作はできないよ",
+        "qr": dict(show_home=True, show_exit=True)
+    },
+    "validation.error": {
+        "text": "{message}",
+        "qr": dict(show_home=True, show_exit=True)
+    },
+}
+
+def msg(
+    key: str,
+    *,
+    text: str | None = None,
+    quick_reply=None,
+    qr_override: dict | None = None,
+    no_qr: bool = False,
+    **fmt
+):
+    """
+    テンプレートキーから TextSendMessage を生成する。
+    - text: テンプレートを上書き（差し替え）したい場合に使用
+    - quick_reply: 既定QRの完全置換（make_quick_reply(...) を渡す）
+    - qr_override: 既定QR(dict)に差分上書き（例: {"show_back": True}）
+    - no_qr: True で QR を一切付けない    
+    - fmt: テキスト中の {placeholder} へ差し込み
+    """
+
+    tpl = _MESSAGE_TEMPLATES.get(key)
+    if not tpl:
+        base_text = text or key
+        tpl_qr = None
+    else:
+        base_text = text or tpl["text"]
+        tpl_qr = dict(tpl.get("qr", {}))  # ← dict() でコピー（元を汚さない）
+
+    # 文言レンダリング
+    try:
+        rendered = base_text.format(**fmt) if fmt else base_text
+    except Exception:
+        rendered = base_text
+
+    # QR の決定ロジック
+    if no_qr:
+        qr = None
+    elif quick_reply is not None:
+        # 明示指定があれば完全置換
+        qr = quick_reply
+    else:
+        # テンプレ既定 + 差分上書き
+        if tpl_qr is None:
+            qr = None
+        else:
+            if qr_override:
+                tpl_qr.update(qr_override)
+            qr = make_quick_reply(**tpl_qr)
+
+    m = TextSendMessage(text=rendered)
+    if qr is not None:
+        m.quick_reply = qr
+    return m
+
+
 # ---- ButtonsTemplateの薄いラッパ（alt_text統一やQR付与を簡便化）----
 def build_buttons(text: str, actions, alt_text: str = "選択メニュー", title: str | None = None,
                   quick_reply: QuickReply | None = None):
@@ -109,9 +241,10 @@ def build_buttons(text: str, actions, alt_text: str = "選択メニュー", titl
     tpl = ButtonsTemplate(text=text, actions=actions, title=title)
     return TemplateSendMessage(alt_text=alt_text, template=tpl, quick_reply=quick_reply)
 
+
 # ---- 日付ピッカー ----
-def ask_date_picker(text: str, data: str, min_dt=None, max_dt=None,
-                    with_back: bool = False, with_reset: bool = False, with_home: bool = True, with_exit: bool = True):
+def ask_date_picker(data: str, min_dt=None, max_dt=None,
+                    with_back: bool = False, with_reset: bool = True, with_home: bool = True, with_exit: bool = True):
     """
     役割: mode='date' の DatetimePicker を1つだけ持つメニューを返す。
     - data: 'pick=start_date' など識別子
@@ -128,17 +261,17 @@ def ask_date_picker(text: str, data: str, min_dt=None, max_dt=None,
     return TemplateSendMessage(
         alt_text="日付を選ぶ",
         template=ButtonsTemplate(
-            text=text,
+            text="日付を選んでね",
             actions=[DatetimePickerAction(**kwargs)]
         ),
         quick_reply=qr
     )   
 
 # ---- 時刻入力メニュー（候補＋スキップ誘導）----
-def ask_time_menu(text: str, prefix: str,
+def ask_time_menu(prefix: str,
                   times: tuple[str, ...] = ("09:00", "10:00", "19:00"),
                   allow_skip: bool = True,
-                  with_back: bool = False, with_reset: bool = False, with_home: bool = True, with_exit: bool = True):
+                  with_back: bool = True, with_reset: bool = True, with_home: bool = True, with_exit: bool = True):
     """
     役割: 時刻候補（Postback）＋任意でスキップを提示する共通メニュー。
     ButtonsTemplate は actions 最大4件のため、候補数を丸める。
@@ -152,7 +285,7 @@ def ask_time_menu(text: str, prefix: str,
 
     qr = make_quick_reply(show_back=with_back, show_reset=with_reset, show_home=with_home, show_exit=with_exit)
     return build_buttons(
-        text=text,
+        text="時刻を HH:MM の形で入力するか、下から選んでね",
         actions=acts,
         alt_text="時刻入力",
         title=None,
@@ -161,7 +294,7 @@ def ask_time_menu(text: str, prefix: str,
 
 
 # ---- 終了指定方法メニュー ----
-def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False, with_home: bool = True, with_exit: bool = True):
+def ask_end_mode_menu(with_back: bool = True, with_reset: bool = True, with_home: bool = True, with_exit: bool = True):
     """
     役割: 「終了時刻を入力/所要時間を入力/スキップ（入力しない）」を選ばせる。
     """
@@ -181,7 +314,7 @@ def ask_end_mode_menu(with_back: bool = False, with_reset: bool = False, with_ho
     )
 
 # ---- 所要時間プリセットメニュー ----
-def ask_duration_menu(with_back: bool = False, with_reset: bool = False, with_home: bool = True, with_exit: bool = True):
+def ask_duration_menu(with_back: bool = True, with_reset: bool = True, with_home: bool = True, with_exit: bool = True):
     """
     役割: 所要時間のプリセット（30/60/90分）と自由入力の案内を提示する。
     """
@@ -202,7 +335,7 @@ def ask_duration_menu(with_back: bool = False, with_reset: bool = False, with_ho
 
 # ---- 定員入力メニュー ----
 def ask_capacity_menu(text: str = "定員を数字で入力してね",
-                      with_back: bool = False, with_reset: bool = False, with_home: bool = True, with_exit: bool = True):
+                      with_back: bool = True, with_reset: bool = True, with_home: bool = True, with_exit: bool = True):
     """
     役割: 定員を数字で入力させる前提の案内と、スキップボタンのみを出す共通メニュー。
     - text: 文言を差し替えたい場合に指定
@@ -294,10 +427,17 @@ def render_event_list(events, style: str = "carousel"):
     - style='carousel' | 'flex' | 'calendar'（将来拡張）
     """
     if style == "carousel":
-        return build_event_list_carousel(events)
-    # 将来: if style == "flex": return build_event_list_flex(events)
-    # 将来: if style == "calendar": return build_event_list_calendar(events)
-    return build_event_list_carousel(events)
+        msg = build_event_list_carousel(events)
+    else:
+        # 将来: if style == "flex": msg = build_event_list_flex(events)
+        # 将来: if style == "calendar": msg = build_event_list_calendar(events)
+        msg = build_event_list_carousel(events)
+
+    # 一覧は常に「ホームに戻る」「ボットを終了する」のQRを既定で付与する。
+    # ただし既に quick_reply が設定されている（カスタムQRを使いたい）場合は尊重する。
+    if getattr(msg, "quick_reply", None) is None:
+        msg.quick_reply = make_quick_reply(show_home=True, show_exit=True)
+    return msg
 
 
 SUPPRESS_EXIT_ATTR = "_suppress_exit_qr"

@@ -18,8 +18,7 @@ import json
 import requests  
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
-    PostbackEvent,
-    DatetimePickerAction, TemplateSendMessage, PostbackAction
+    PostbackEvent, TemplateSendMessage, PostbackAction
 )
 from linebot.exceptions import InvalidSignatureError
 
@@ -129,7 +128,6 @@ def callback(request):
             if EventDraft.objects.filter(user_id=user_id).exists():
                 reply = cw.handle_wizard_text(user_id, text)
                 if reply:
-                    reply = ui.attach_exit_qr(reply)
                     line_bot_api.reply_message(ev.reply_token, reply)
                     continue
 
@@ -154,7 +152,7 @@ def callback(request):
 
             # 1) まずイベント削除（確認→実行）を処理
             if data.startswith("evt=delete&id="):
-                m = re.search(r"evt=delete&id=(\d+)", data)
+                m = re.search(r"evt=delete&id=(\d)", data)
                 if not m:
                     line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="不正なイベントIDだよ"))
                     continue
@@ -167,7 +165,7 @@ def callback(request):
                 continue
 
             if data.startswith("evt=delete_confirm"):
-                m = re.search(r"id=(\d+)", data)
+                m = re.search(r"id=(\d)", data)
                 ok = "ok=1" in data
                 if not m:
                     line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="不正なイベントIDだよ"))
@@ -179,7 +177,11 @@ def callback(request):
                     continue
 
                 if ok:
-                    # TODO: 権限チェック（作成者のみ削除可 等）が必要ならここで判定
+                    # 作成者のみ削除可（policies で拡張可）
+                    from . import policies  # 既存 import 方針に合わせる
+                    if not policies.can_edit_event(user_id, e):
+                        line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="イベントの作成者だけが削除できるよ"))
+                        continue
                     Event.objects.filter(id=eid, scope_id=scope_id).delete()
                     line_bot_api.reply_message(ev.reply_token, [
                         TextSendMessage(text="イベントを削除したよ"),
@@ -191,7 +193,7 @@ def callback(request):
                 continue
             
             
-            # 2) 次に一覧/詳細/編集のショートカットを処理
+            # 2) 次に一覧/詳細のショートカットを処理
             shortcut = cmd.handle_evt_shortcut(user_id, scope_id, data)
             if shortcut:
                 if isinstance(shortcut, (TextSendMessage, TemplateSendMessage)):
@@ -203,12 +205,7 @@ def callback(request):
             # 3) ホームメニューの「イベント一覧」
             if data == "home=list":
                 qs = Event.objects.filter(scope_id=scope_id).order_by("-id")[:10]
-                reply = ui.render_event_list(qs)  # QRはこの時点では付いていない
-                if isinstance(reply, list):
-                    reply = ui.attach_exit_qr(reply)
-                else:
-                    if getattr(reply, "quick_reply", None) is None:
-                        reply.quick_reply = ui.make_quick_reply(show_home=True, show_exit=True)
+                reply = ui.render_event_list(qs)
                 line_bot_api.reply_message(ev.reply_token, reply)
                 continue
 
@@ -291,6 +288,9 @@ def events_list(request):
     if request.method != 'GET':
         return HttpResponseBadRequest('invalid method')
 
+    # LIFF から受け取るスコープ（groupId/roomId/userId）。未指定なら全体（後方互換）
+    scope_id = request.GET.get('scope_id') or None
+
     # 1) Event モデル取得（存在しないなら空配列で返す）
     try:
         EventModel = apps.get_model('events', 'Event')
@@ -305,6 +305,8 @@ def events_list(request):
     order_keys = [k for k in order_candidates if k in fields]
     try:
         qs = EventModel.objects.all()
+        if scope_id and 'scope_id' in fields:
+            qs = qs.filter(scope_id=scope_id)
         if order_keys:
             qs = qs.order_by(*order_keys)
         qs = qs[:100]
