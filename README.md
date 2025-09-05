@@ -1,8 +1,15 @@
 # line_eventbot
-Django で作る Line連携イベント作成・管理アプリ
+LIFFで動作するLINEグループ向けイベント作成・管理アプリ
 
-## Backend (Django) の起動
-`manage.py runserver`
+## 構成
+- フロントエンド: LIFF (LINE Front-end Framework)  
+  - イベント作成・参加・キャンセルなどをUIで操作  
+- バックエンド: Django  
+  - イベントデータ管理、ユーザー操作の処理  
 
-## ngrokで公開
+## 動作検証
+### Backend (Django) の起動
+`python manage.py runserver`
+
+### ngrokで公開
 `ngrok http 8000`
