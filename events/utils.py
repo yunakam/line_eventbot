@@ -2,10 +2,69 @@
 # 役割: UIに依存しない純ロジック（パース、日時合成、params→日付抽出）を集約する。
 
 import re
+import os
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone as dt_timezone
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+def _get_env():
+    """
+    .env の APP_ENV を読み取り、dev / staging / prod のいずれかを返す。
+    既定は dev。
+    """
+    return os.getenv("APP_ENV", "dev").lower()
+
+def get_liff_id() -> str:
+    """
+    APP_ENV に応じて LIFF_ID_* を返す。
+    .env 例: LIFF_ID_DEV, LIFF_ID_STAGING, LIFF_ID_PROD
+    """
+    env = _get_env()
+    key = {
+        "dev": "LIFF_ID_DEV",
+        "staging": "LIFF_ID_STAGING",
+        "prod": "LIFF_ID_PROD",
+    }.get(env, "LIFF_ID_DEV")
+    val = os.getenv(key, "")
+    if not val:
+        raise RuntimeError(f"{key} is not set in environment")
+    return val
+
+def get_liff_endpoint() -> str:
+    """
+    APP_ENV に応じて LIFF_ENDPOINT_URL_* を返す（/liff/ まで含むベースURL）。
+    .env 例: LIFF_ENDPOINT_URL_DEV=http://localhost:8000/liff/
+    """
+    env = _get_env()
+    key = {
+        "dev": "LIFF_ENDPOINT_URL_DEV",
+        "staging": "LIFF_ENDPOINT_URL_STAGING",
+        "prod": "LIFF_ENDPOINT_URL_PROD",
+    }.get(env, "LIFF_ENDPOINT_URL_DEV")
+    val = os.getenv(key, "")
+    if not val:
+        raise RuntimeError(f"{key} is not set in environment")
+    return val.rstrip("/")
+
+def build_liff_url_for_source(source_type: str, group_id: str | None = None, user_id: str | None = None) -> str:
+    """
+    受信メッセージの送信元に応じて LIFF URL を組み立てる。
+    - グループ: {LIFF_ENDPOINT}/?src=group&groupId=...
+    - 1:1     : {LIFF_ENDPOINT}/?src=user&userId=...
+    """
+    base = get_liff_endpoint()
+    params = {}
+    if source_type == "group" and group_id:
+        params = {"src": "group", "groupId": group_id}
+    elif source_type == "user" and user_id:
+        params = {"src": "user", "userId": user_id}
+    else:
+        params = {"src": "unknown"}
+    return f"{base}?{urlencode(params)}"
+
+
+# ===== 以下、Chatbot用 ===== #
 
 def _fmt_line_date(dt):
     """Datetime -> 'YYYY-MM-DD'（DatetimePicker mode='date'用）に整形して返す。"""

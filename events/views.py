@@ -2,6 +2,8 @@
 import os
 import re
 import unicodedata
+import json
+import requests  
 from datetime import date, time, timedelta, datetime
 
 from django.apps import apps
@@ -13,22 +15,75 @@ from django.conf import settings
 from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
-from linebot import LineBotApi, WebhookParser
-import json
-import requests  
+from linebot import LineBotApi, WebhookParser, WebhookHandler
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
-    PostbackEvent, TemplateSendMessage, PostbackAction
-)
+    PostbackEvent, TemplateSendMessage, PostbackAction,
+    QuickReply, QuickReplyButton, URIAction
+    )
 from linebot.exceptions import InvalidSignatureError
 
+from . import ui
 from .models import Event, EventDraft, EventEditDraft
-from . import ui, utils
+from .utils import build_liff_url_for_source
 from .handlers import create_wizard as cw, edit_wizard as ew, commands as cmd
 
 import logging
 logger = logging.getLogger(__name__)
 
+
+
+def _get(name: str) -> str:
+    """共通キー優先で .env から取得。無ければ APP_ENV を見て環境別キーを参照。"""
+    val = os.getenv(name, "")
+    if val:
+        return val
+    env = os.getenv("APP_ENV", "dev").lower()
+    return os.getenv(f"{name}_{env.upper()}", "")
+
+# .env 参照（LINE_* が無ければ MESSAGING_* もフォールバックで見る）
+_access_token = _get("LINE_CHANNEL_ACCESS_TOKEN") or _get("MESSAGING_CHANNEL_ACCESS_TOKEN")
+_channel_secret = _get("LINE_CHANNEL_SECRET") or _get("MESSAGING_CHANNEL_SECRET")
+
+if not _access_token or not _channel_secret:
+    # 起動時に気づけるよう、明示的に例外を投げる
+    raise RuntimeError("LINE channel credentials are not set. Check .env")
+
+line_bot_api = LineBotApi(_access_token)
+handler = WebhookHandler(_channel_secret)
+
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_text_message(event):
+    text = (event.message.text or "").strip()
+    source = event.source
+
+    # 「イベント」での分岐
+    if text in ("イベント", "event", "ｲﾍﾞﾝﾄ"):
+        # グループでは「1:1で作成してね」と最小ガイダンスだけ返す
+        if source.type == "group":
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="イベントはボットとの1:1チャットで作れるよ")
+            )
+            return
+        # 1:1 では LIFF を開くボタンを返す
+        liff_url = build_liff_url_for_source(
+            source_type="user",
+            user_id=getattr(source, "user_id", None),
+        )
+        msg = ui.msg_open_liff("イベント管理を開くよ。『開く』をタップしてね。", liff_url)
+        line_bot_api.reply_message(event.reply_token, msg)
+        return
+
+    # ここまで来たら動作確認用のエコー（まずは確実に返信が出る状態を作る）
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=f"受け付けたよ: {text}")
+    )
+    
+    
+# ===== 以下、Chatbot用 ===== #
 
 def _is_home_menu_trigger(text: str) -> bool:
     """
@@ -87,142 +142,28 @@ def _resolve_scope_id(obj) -> str:  # ev も ev.source も受け取れる
 
 
 # ==== LINEプラットフォームからのWebhookエンドポイント ==== #
+# --- 既存の import 群の後に line_bot_api / handler の初期化があること（前回答の通り） ---
+
 @csrf_exempt
 def callback(request):
-    if request.method != "POST":
-        return HttpResponse("Method not allowed", status=405)
+    # get X-Line-Signature header value
+    signature = request.META.get('HTTP_X_LINE_SIGNATURE', '')
+    # get request body as text
+    body = request.body.decode('utf-8')
+    logger.debug("Request body: %s", body)
 
-    line_bot_api, parser = get_line_clients()
-
-    signature = request.headers.get("X-Line-Signature", "")
-    body = request.body.decode("utf-8")
+    # ★ここは「手動で events を回さない」★
     try:
-        events = parser.parse(body, signature)
+        handler.handle(body, signature)
     except InvalidSignatureError:
+        logger.error("Invalid signature. Check your channel access token/channel secret.")
         return HttpResponse(status=400)
+    except Exception as e:
+        logger.error("Error: %s", str(e))
+        return HttpResponseBadRequest()
 
-    for ev in events:
-        scope_id = _resolve_scope_id(ev)
+    return HttpResponse('OK')
 
-        # --- Text ---
-        if isinstance(ev, MessageEvent) and isinstance(ev.message, TextMessage):
-            user_id = ev.source.user_id
-            text = ev.message.text.strip()
-            
-            # ボット起動語彙は最優先で処理。イベントドラフトを破棄してホームメニュー
-            if _is_home_menu_trigger(text):
-                # ドラフトがある場合は破棄してリセット
-                EventDraft.objects.filter(user_id=user_id).delete()
-                EventEditDraft.objects.filter(user_id=user_id).delete()
-                line_bot_api.reply_message(ev.reply_token, ui.ask_home_menu("home=launch"))
-                continue
-
-            # 編集ドラフトがあるなら編集のテキスト優先
-            if EventEditDraft.objects.filter(user_id=user_id).exists():
-                reply = ew.handle_edit_text(user_id, text)
-                if reply:
-                    line_bot_api.reply_message(ev.reply_token, reply)
-                    continue
-
-            # 作成ウィザード中のテキスト
-            if EventDraft.objects.filter(user_id=user_id).exists():
-                reply = cw.handle_wizard_text(user_id, text)
-                if reply:
-                    line_bot_api.reply_message(ev.reply_token, reply)
-                    continue
-
-            # それ以外のテキストは全てメニューへ誘導
-            # line_bot_api.reply_message(ev.reply_token, ui.ask_home_menu("home=help"))
-            # continue
-
-
-        # --- Postback ---        
-        elif isinstance(ev, PostbackEvent):
-            user_id = ev.source.user_id
-            data = ev.postback.data or ""
-            params = ev.postback.params or {}
-
-            if data == "back_home":
-                # イベントドラフトを破棄
-                EventDraft.objects.filter(user_id=user_id).delete()
-                EventEditDraft.objects.filter(user_id=user_id).delete()
-                
-                line_bot_api.reply_message(ev.reply_token, ui.ask_home_menu())
-                continue
-
-            # 1) まずイベント削除（確認→実行）を処理
-            if data.startswith("evt=delete&id="):
-                m = re.search(r"evt=delete&id=(\d)", data)
-                if not m:
-                    line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="不正なイベントIDだよ"))
-                    continue
-                eid = int(m.group(1))
-                e = Event.objects.filter(id=eid, scope_id=scope_id).first()
-                if not e:
-                    line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="イベントが見つからないよ"))
-                    continue
-                line_bot_api.reply_message(ev.reply_token, ui.ask_delete_confirm(e))
-                continue
-
-            if data.startswith("evt=delete_confirm"):
-                m = re.search(r"id=(\d)", data)
-                ok = "ok=1" in data
-                if not m:
-                    line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="不正なイベントIDだよ"))
-                    continue
-                eid = int(m.group(1))
-                e = Event.objects.filter(id=eid, scope_id=scope_id).first()
-                if not e:
-                    line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="イベントが見つからないよ"))
-                    continue
-
-                if ok:
-                    # 作成者のみ削除可（policies で拡張可）
-                    from . import policies  # 既存 import 方針に合わせる
-                    if not policies.can_edit_event(user_id, e):
-                        line_bot_api.reply_message(ev.reply_token, TextSendMessage(text="イベントの作成者だけが削除できるよ"))
-                        continue
-                    Event.objects.filter(id=eid, scope_id=scope_id).delete()
-                    line_bot_api.reply_message(ev.reply_token, [
-                        TextSendMessage(text="イベントを削除したよ"),
-                        ui.ask_home_menu()
-                    ])
-                else:
-                    # キャンセル → 詳細へ戻す（元のButtonsTemplate）
-                    line_bot_api.reply_message(ev.reply_token, ui.build_event_summary(e))
-                continue
-            
-            
-            # 2) 次に一覧/詳細のショートカットを処理
-            shortcut = cmd.handle_evt_shortcut(user_id, scope_id, data)
-            if shortcut:
-                if isinstance(shortcut, (TextSendMessage, TemplateSendMessage)):
-                    if getattr(shortcut, "quick_reply", None) is None:
-                        shortcut.quick_reply = ui.make_quick_reply(show_home=True, show_exit=True)
-                line_bot_api.reply_message(ev.reply_token, shortcut)
-                continue
-
-            # 3) ホームメニューの「イベント一覧」
-            if data == "home=list":
-                qs = Event.objects.filter(scope_id=scope_id).order_by("-id")[:10]
-                reply = ui.render_event_list(qs)
-                line_bot_api.reply_message(ev.reply_token, reply)
-                continue
-
-            # 4) 編集ドラフトがあるなら編集ポストバック優先
-            if EventEditDraft.objects.filter(user_id=user_id).exists():
-                reply = ew.handle_edit_postback(user_id, scope_id, data, params)
-                if reply:
-                    line_bot_api.reply_message(ev.reply_token, reply)
-                    continue
-
-            # 5) 作成ウィザードのポストバック（home=create / endmode等 含む）
-            reply = cw.handle_wizard_postback(user_id, data, params, scope_id)
-            if reply:
-                line_bot_api.reply_message(ev.reply_token, reply)
-
-
-    return HttpResponse(status=200)
 
 
 # =========================

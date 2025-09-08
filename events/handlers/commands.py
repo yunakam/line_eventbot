@@ -1,3 +1,4 @@
+# events/handlers/commands.py
 # 役割: 「一覧/詳細/編集開始」などのコマンドと、カルーセルからのショートカットを処理する
 
 import re
@@ -21,7 +22,7 @@ def handle_evt_shortcut(user_id: str, scope_id: str, data: str):
     try:
         e = Event.objects.get(id=eid, scope_id=scope_id)
     except Event.DoesNotExist:
-        return TextSendMessage(text="該当するイベントが見つからないよ")
+        return ui.msg("details.not_found")
 
     if kind == "detail":
         return ui.build_event_summary(e)

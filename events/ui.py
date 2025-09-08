@@ -3,13 +3,27 @@
 
 from . import utils
 from linebot.models import (
-    TemplateSendMessage, ButtonsTemplate, PostbackAction,
-    DatetimePickerAction, QuickReply, QuickReplyButton,
-    TextSendMessage, MessageAction,
+    TemplateSendMessage, TextSendMessage, MessageAction,
+    QuickReply, QuickReplyButton, ButtonsTemplate,
+    PostbackAction, DatetimePickerAction,
     CarouselTemplate, CarouselColumn,
-    ConfirmTemplate
+    ConfirmTemplate,
+    URIAction
 )
 
+def msg_open_liff(text: str, liff_url: str) -> TextSendMessage:
+    """
+    LIFF を開くための「開く」クイックリプライ付きテキストを返す。
+    ユーザー向け文言は、例: 「イベント管理を開くよ。『開く』をタップしてね。」
+    """
+    return TextSendMessage(
+        text=text,
+        quick_reply=QuickReply(items=[
+            QuickReplyButton(action=URIAction(label="開く", uri=liff_url))
+        ])
+    )
+
+# ===== 以下、Chatbot用 ===== #
 
 # ---- ホームメニュー（QuickReply）を表示 ----
 def ask_home_menu(data: str | None = None):
@@ -100,14 +114,6 @@ def make_quick_reply(
 
 _MESSAGE_TEMPLATES = {
     # 汎用
-    "home.welcome": {
-        "text": "イベントボットだよ。呼んだ？",
-        "qr": dict(show_home=False, show_exit=True)
-    },
-    "home.back": {
-        "text": "やりたいことを選んでね",
-        "qr": dict(show_home=True, show_exit=True)
-    },
     "exit": {
         "text": "また必要になったら「ボット」と呼んでね👋",
         "qr": dict(show_home=False, show_exit=False)
@@ -149,7 +155,7 @@ _MESSAGE_TEMPLATES = {
         "qr": dict(show_home=True, show_exit=True)
     },
     "detail.not_found": {
-        "text": "不正なIDだよ",
+        "text": "イベントの作成者だけが削除できるよ",
         "qr": dict(show_home=True, show_exit=True)
     },
 
