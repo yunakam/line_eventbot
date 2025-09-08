@@ -1,0 +1,40 @@
+/* ========== ベース ========== */
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Noto Sans JP, sans-serif; margin: 24px; }
+h1 { font-size: 28px; margin: 0 0 16px; }
+#btn-create { appearance: none; border: 0; border-radius: 9999px; padding: 10px 16px; background: #06c755; color: #fff; cursor: pointer; }
+#event-list { margin-top: 24px; }
+.card { border: 1px solid #eee; border-radius: 12px; padding: 12px 14px; margin: 0 0 12px; }
+.card h3 { margin: 0 0 4px; font-size: 16px; }
+.card p { margin: 0; font-size: 14px; color: #555; }
+.muted { color: #888; font-size: 13px; }
+
+/* ========== モーダル ========== */
+.backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.35);
+  backdrop-filter: blur(1px); z-index: 999;
+}
+.dialog {
+  position: fixed; inset: 0; display: grid; place-items: center; z-index: 1000;
+}
+.dialog[hidden], .backdrop[hidden] { display: none; }
+
+.dialog .dlg-panel {
+  width: min(560px, 92vw);
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.12);
+  overflow: hidden;
+}
+
+.dialog .dlg-header { padding: 14px 16px; background: transparent; }
+.dialog .dlg-body   { padding: 12px 16px; background: transparent; }
+.dialog .dlg-footer { display: flex; gap: 8px; justify-content: end; padding: 10px 16px; background: transparent; }
+
+.row { display: grid; gap: 6px; margin: 10px 0; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 6px 0 10px; }
+.row span { font-size: 13px; color: #444; }
+input[type="text"], input[type="date"], input[type="time"] {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #ddd; border-radius: 10px;
+}
+.btn-primary   { background: #06c755; color: #fff; border: 0; padding: 8px 14px; border-radius: 9999px; }
+.btn-secondary { background: #f2f2f2; color: #333; border: 0; padding: 8px 14px; border-radius: 9999px; }

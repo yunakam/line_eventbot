@@ -1,47 +1,69 @@
 <!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>イベント管理（LIFF）</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- LINE LIFF SDK（公式CDN）を読み込む -->
-    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>イベント管理</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/events/liff.css?v=1">
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+</head>
 
-      <style>
-      .toolbar { display:flex; justify-content: space-between; align-items:center; gap:8px; margin: 12px 8px; }
-      .btn { padding: 8px 12px; border-radius: 10px; border: none; background: #06C755; color: #fff; font-weight: 600; }
-      .grid { display: grid; grid-template-columns: repeat(1, minmax(0,1fr)); gap: 12px; padding: 8px; }
-      @media (min-width: 480px) { .grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
-      @media (min-width: 768px) { .grid { grid-template-columns: repeat(3, minmax(0,1fr)); } }
+<body>
+  <h1>イベント管理</h1>
 
-      .card { border-radius: 14px; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.08); padding: 12px; }
-      .card__header { display:flex; align-items: center; justify-content: space-between; gap: 8px; }
-      .card__title { font-size: 15px; font-weight: 700; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 75%; }
-      .card__actions { display:flex; gap: 6px; }
-      .icon-btn { display:inline-flex; align-items:center; justify-content:center; padding:6px; border-radius: 10px; border:1px solid #e5e7eb; background:#fff; }
-      .icon-btn:hover { background: #f9fafb; }
-      .card__meta { margin-top: 8px; font-size: 13px; color: #374151; }
-      .meta__row { display:flex; justify-content: space-between; padding: 4px 0; border-top: 1px dashed #e5e7eb; }
-      .meta__row:first-child { border-top: none; }
-      .meta__label { color:#6b7280; }
-      .meta__val { font-weight:600; }
-      #empty-state { text-align:center; color:#6b7280; padding: 16px 8px; }
-    </style>
-  </head>
+  <!-- 作成ボタン（押下で作成フローへ） -->
+  <button id="btn-create" data-href="/liff/create">イベント作成</button>
 
-  <body>
-    {% load static %}
-    <!-- 画面タイトル -->
-    <h1>イベント管理</h1>
+  <!-- 一覧描画先（JSがここに差し込む） -->
+  <div id="event-list" aria-live="polite">
+    <p class="muted">読み込み中…</p>
+  </div>
 
-   <!-- イベント一覧：liff.js は #empty-state と #event-list を参照する -->
-   <div id="empty-state"></div>
-   <div id="event-list" class="grid"></div>
+  
+  <!-- イベント作成モーダル -->
+  <div id="create-backdrop" class="backdrop" hidden></div>
 
-    <!-- サーバ側で LIFF ID を埋め込み。liff.js で liff.init に渡す -->
-    <script>window.LIFF_ID = "{{ LIFF_ID }}";</script>
+  <section id="create-dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-title" hidden>
+    <div class="dlg-panel">
+      <header class="dlg-header">
+        <h2 id="dlg-title">イベント作成</h2>
+      </header>
 
-    <!-- 画面挙動（ログイン/トークン検証/一覧取得/描画） -->
-    <script src="{% static 'events/liff.js' %}"></script>
-  </body>
+      <form id="create-form" class="dlg-body">
+        <!-- ここは既存の入力フィールドのままでOK -->
+        <label class="row">
+          <span>タイトル</span>
+          <input id="f-title" name="title" type="text" placeholder="イベント名を入力してね" required>
+        </label>
+        <label class="row">
+          <span>日付</span>
+          <input id="f-date" name="date" type="date" required>
+        </label>
+        <div class="row2">
+          <label>
+            <span>開始</span>
+            <input id="f-start" name="start_time" type="time">
+          </label>
+          <label>
+            <span>終了</span>
+            <input id="f-end" name="end_time" type="time">
+          </label>
+        </div>
+        <p class="muted">未入力の時刻は省略されるよ。</p>
+      </form>
+
+      <footer class="dlg-footer">
+        <button type="button" id="btn-cancel" class="btn-secondary">やめる</button>
+        <button type="button" id="btn-save" class="btn-primary">保存</button>
+      </footer>
+    </div>
+  </section>
+
+
+  <!-- LIFF SDK（公式CDN）より前に“LIFF_ID”を定義しておく -->
+  <script>window.LIFF_ID = "2008053316-zR37dmZo";</script>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <!-- アプリ本体 -->
+  <script src="/static/events/liff.js" defer></script>
+</body>
 </html>
