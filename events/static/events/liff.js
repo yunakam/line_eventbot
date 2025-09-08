@@ -18,10 +18,10 @@ function log(...args) {
 }
 
 // DjangoのCSRFトークンをCookieから取得する関数
-function getCSRFToken() {
+ function getCSRFToken() {
   const m = document.cookie.match(/csrftoken=([^;]+)/);
-  return m ? decodeURIComponent(m[1]) : '';
-}
+   return m ? decodeURIComponent(m[1]) : '';
+ }
 
 
 /** IDトークン検査と検証関数
@@ -31,7 +31,7 @@ function getCSRFToken() {
 // id_tokenのexpを秒で返す。取れない場合は0
 function getIdTokenExpSec() {
   try {
-    const dec = liff.getDecodedIDToken(); // { exp, iat, ... }
+    const dec = liff.getDecodedIDToken(); 
     return dec?.exp ? Number(dec.exp) : 0;
   } catch (_) {
     return 0;
@@ -40,7 +40,7 @@ function getIdTokenExpSec() {
 
 function logIdTokenDebug() {
   try {
-    const dec = liff.getDecodedIDToken(); // { exp, iat, ... }
+    const dec = liff.getDecodedIDToken();
     const expMs = (dec?.exp ?? 0) * 1000;
     log('id_token exp(ms)', expMs, 'now(ms)', Date.now(), 'delta(ms)', expMs - Date.now());
   } catch (e) {
@@ -130,16 +130,19 @@ async function ensureFreshIdToken() {
 // ==== IDトークン検査ここまで ====
 
 // 読みやすい日付文字列を作るユーティリティ
+function isValidDate(d) {
+  return d instanceof Date && !Number.isNaN(d.getTime());
+}
+
+// "YYYY/MM/DD" を返す（無効なら空文字）
 function formatDate(dtStr) {
-  // dtStr: "2025-09-08" などの日付文字列 or ISO
   try {
     const d = new Date(dtStr);
-    // 日本語表記: YYYY/MM/DD(曜)
-    const w = ['日','月','火','水','木','金','土'][d.getDay()];
+    if (!isValidDate(d)) return '';
     const pad = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())}(${w})`;
-  } catch (e) {
-    return dtStr || '';
+    return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
+  } catch (_) {
+    return '';
   }
 }
 
@@ -151,12 +154,22 @@ function formatTime(dtStrOrTime) {
   // ISO文字列の場合
   try {
     const d = new Date(dtStrOrTime);
+    if (!isValidDate(d)) return '';
     const pad = (n) => String(n).padStart(2, '0');
     return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   } catch (e) {
     return dtStrOrTime || '';
   }
 }
+
+// 日付＋時刻を結合して "YYYY/MM/DD HH:MM" を返す（片方空ならある方だけ）
+function formatDateTime(dateStr, timeStr) {
+  const d = formatDate(dateStr);
+  const t = formatTime(timeStr);
+  if (d && t) return `${d} ${t}`;
+  return d || t || '';
+}
+
 
 // アイコン（SVG）— 依存なしで軽量に表示する
 const Icon = {
@@ -179,11 +192,22 @@ function renderCard(ev) {
   const id = ev.id;
   const title = ev.title || ev.name || '(無題イベント)';
   // 日付と開始時刻の候補を広めに拾う
-  const date = ev.date || ev.event_date || ev.start_date || ev.start_datetime || ev.start_at;
-  const startTime = ev.start_time || ev.start || ev.start_datetime || ev.start_at;
-
-  const dateText = formatDate(date);
-  const timeText = formatTime(startTime);
+  // --- 候補の拾い方を強化 ---
+  // 1) ISO の start_datetime / start_at があれば、そこから日付と時刻を切り出す
+  let iso = ev.start_datetime || ev.start_at || null;
+  let date = ev.date || ev.event_date || ev.start_date || null;
+  let startTime = ev.start_time || ev.start || null;
+  if (iso && (!date || !startTime)) {
+    const d = new Date(iso);
+    if (isValidDate(d)) {
+      const pad = (n) => String(n).padStart(2, '0');
+    if (!date)  date  = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      if (!startTime) startTime = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+  }
+  const dateText = formatDateTime(date, startTime); // ← 「2025/09/08 12:30」の形に
+  const timeText = formatTime(startTime);           // 既存の「開始」行でも使う（必要なら残す）
+ 
 
   return `
   <div class="card" data-id="${id}">
@@ -195,9 +219,8 @@ function renderCard(ev) {
       </div>
     </div>
     <div class="card__meta">
-      <div class="meta__row"><span class="meta__label">日付</span><span class="meta__val">${dateText}</span></div>
-      <div class="meta__row"><span class="meta__label">開始</span><span class="meta__val">${timeText}</span></div>
-    </div>
+      <div class="meta__row"><span class="meta__label">日付</span><span class="meta__val">${dateText || '未設定'}</span></div> 
+</div>
   </div>`;
 }
 

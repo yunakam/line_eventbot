@@ -31,9 +31,8 @@ htmlcov/
 # .env
 .env
 
-# Memo
-memo.md
-
-# VScode workspace
+# Others
 line_eventbot.code-workspace
 todo.md
+memo.md
+*copy*
