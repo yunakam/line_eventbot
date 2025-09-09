@@ -284,24 +284,31 @@
       gItems = items;  // ← 一覧をキャッシュ
       listEl.innerHTML = items.map((e) => {
         const name = e.name || "（無題）";
-        const hasClock = !!e.start_time_has_clock;
-        const start = e.start_time ? formatLocalDateTime(e.start_time, hasClock) : "未設定";
-        const cap = (e.capacity === null || e.capacity === undefined) ? "定員なし" : `定員: ${e.capacity}`;
+
+        // 追加：開始〜終了の1行レンジを生成
+        const range = buildLocalRange(e.start_time, !!e.start_time_has_clock, e.end_time);
+
+        const cap = (e.capacity === null || e.capacity === undefined)
+          ? "定員なし"
+          : `定員: ${e.capacity}`;
+
         const isAuthor = !!e.created_by && !!currentUserId && (e.created_by === currentUserId);
+
         return `
           <article class="card" data-id="${e.id}">
             <h3>${escapeHtml(name)}</h3>
-            <p>開始: ${escapeHtml(start)}</p>
+            <p>${escapeHtml(range)}</p>
             <p>${escapeHtml(cap)}</p>
             ${isAuthor ? `
               <div class="actions">
-                <button class="btn-link" data-act="edit" data-id="${e.id}">編集</button>
-                <button class="btn-link dangerous" data-act="delete" data-id="${e.id}" data-name="${escapeHtml(name)}">削除</button>
+                <button class="btn-outline" data-act="edit" data-id="${e.id}">編集</button>
+                <button class="btn-outline dangerous" data-act="delete" data-id="${e.id}" data-name="${escapeHtml(name)}">削除</button>
               </div>
             ` : ``}
           </article>
         `;
       }).join("");
+
 
     } catch (err) {
       console.error(err);
@@ -320,6 +327,40 @@
     const hh = String(d.getHours()).padStart(2, "0");
     const mm = String(d.getMinutes()).padStart(2, "0");
     return `${y}/${m}/${dd} ${hh}:${mm}`;
+  }
+
+    // ISO2つから「YYYY/MM/DD HH:MM ~ HH:MM」等の1行レンジを作る
+  function buildLocalRange(startIso, hasClock, endIso) {
+    if (!startIso) return "未設定";
+    const s = new Date(startIso);
+
+    const sy  = s.getFullYear();
+    const sm  = String(s.getMonth() + 1).padStart(2, "0");
+    const sd  = String(s.getDate()).padStart(2, "0");
+
+    if (!hasClock) {
+      // 開始が日付のみ → 日付だけ出す
+      return `${sy}/${sm}/${sd}`;
+    }
+
+    const sh = String(s.getHours()).padStart(2, "0");
+    const smin = String(s.getMinutes()).padStart(2, "0");
+    const startStr = `${sy}/${sm}/${sd} ${sh}:${smin}`;
+
+    if (!endIso) return startStr;
+
+    const e = new Date(endIso);
+    const ey  = e.getFullYear();
+    const em  = String(e.getMonth() + 1).padStart(2, "0");
+    const ed  = String(e.getDate()).padStart(2, "0");
+    const eh  = String(e.getHours()).padStart(2, "0");
+    const emin = String(e.getMinutes()).padStart(2, "0");
+
+    // 同日なら「~ HH:MM」、日付が跨るなら終端も日付から出す
+    const sameDay = (sy === ey && sm === em && sd === ed);
+    return sameDay
+      ? `${startStr} ~ ${eh}:${emin}`
+      : `${startStr} ~ ${ey}/${em}/${ed} ${eh}:${emin}`;
   }
 
   function escapeHtml(s) {
