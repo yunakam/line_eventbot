@@ -30,27 +30,62 @@
       </header>
 
       <form id="create-form" class="dlg-body">
-        <!-- ここは既存の入力フィールドのままでOK -->
+        <!-- タイトル（必須、エリア右にエラー表示） -->
         <label class="row">
           <span>タイトル</span>
           <input id="f-title" name="title" type="text" placeholder="イベント名を入力してね" required>
+          <small id="err-title" class="err" hidden>イベント名を入力してね</small>
         </label>
+
+        <!-- 日付（必須） -->
         <label class="row">
           <span>日付</span>
           <input id="f-date" name="date" type="date" required>
+          <small id="err-date" class="err" hidden>日付を選んでね</small>
         </label>
+
+        <!-- 開始時刻（任意） -->
         <div class="row2">
           <label>
             <span>開始</span>
             <input id="f-start" name="start_time" type="time">
           </label>
+
+          <!-- 終了入力モード切り替え（終了時刻 or 所要時間） -->
           <label>
-            <span>終了</span>
-            <input id="f-end" name="end_time" type="time">
+            <span>終了の入力</span>
+            <div>
+              <label style="margin-right:12px;">
+                <input type="radio" name="endmode" value="time" checked> 終了時刻
+              </label>
+              <label>
+                <input type="radio" name="endmode" value="duration"> 所要時間
+              </label>
+            </div>
           </label>
         </div>
-        <p class="muted">未入力の時刻は省略されるよ。</p>
+
+        <!-- 終了時刻（endmode=time の時だけ表示） -->
+        <label class="row" id="row-endtime">
+          <span>終了時刻</span>
+          <input id="f-end" name="end_time" type="time" placeholder="例: 18:00">
+        </label>
+
+        <!-- 所要時間（endmode=duration の時だけ表示） -->
+        <label class="row" id="row-duration" hidden>
+          <span>所要時間</span>
+          <input id="f-duration" name="duration" type="text" placeholder="例: 1:30 / 90m / 2h / 120">
+        </label>
+
+        <!-- 定員（任意） -->
+        <label class="row">
+          <span>定員</span>
+          <input id="f-cap" name="capacity" type="number" inputmode="numeric" min="1" step="1" placeholder="数字を入力してね">
+        </label>
+
+        <p class="muted">開始・終了は未入力でもOKだよ。所要時間は 1:30 / 90m / 2h / 120 などで入力できるよ。</p>
       </form>
+
 
       <footer class="dlg-footer">
         <button type="button" id="btn-cancel" class="btn-secondary">やめる</button>
@@ -59,11 +94,15 @@
     </div>
   </section>
 
-
-  <!-- LIFF SDK（公式CDN）より前に“LIFF_ID”を定義しておく -->
-  <script>window.LIFF_ID = "2008053316-zR37dmZo";</script>
+  <script>
+    // LIFF ID（Djangoのビューから埋め込み）
+    window.LIFF_ID = "{{ LIFF_ID|default_if_none:''|escapejs }}";
+    // OAuth リダイレクト先の絶対URL（/liff/ 固定）
+    window.LIFF_REDIRECT_ABS = "{{ request.scheme }}://{{ request.get_host }}/liff/";
+  </script>
+  <!-- ※ LIFF SDK はここで1回だけ読み込む（重複を削除） -->
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- アプリ本体 -->
-  <script src="/static/events/liff.js" defer></script>
+  <script src="/static/events/liff.js"></script>
 </body>
 </html>

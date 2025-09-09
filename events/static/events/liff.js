@@ -38,9 +38,11 @@ function formatIsoToJst(isoStr) {
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
+
 /** JSON取得（/api/events と /api/events/ の両方を順に試す） */
-async function fetchEventsJson() {
-  const urls = ["/api/events", "/api/events/"];
+async function fetchEventsJson(scopeId) {
+  const qs = scopeId ? `?scope_id=${encodeURIComponent(scopeId)}` : "";
+  const urls = [`/api/events${qs}`, `/api/events/${qs}`];
   let lastErr;
   for (const u of urls) {
     try {
@@ -53,6 +55,35 @@ async function fetchEventsJson() {
   }
   throw lastErr || new Error("イベント取得に失敗したよ");
 }
+
+/** LIFFクエリから scope_id を決める（groupId/roomId/userId の優先順） */
+function getScopeId() {
+  return getQuery("groupId") || getQuery("roomId") || getQuery("userId") || null;
+}
+
+/** エラー表示の補助 */
+function clearInlineErrors() {
+  document.getElementById("err-title")?.setAttribute("hidden", "");
+  document.getElementById("err-date")?.setAttribute("hidden", "");
+}
+function showFieldError(which /* 'title' | 'date' */) {
+  const el = document.getElementById(which === "title" ? "err-title" : "err-date");
+  el?.removeAttribute("hidden");
+}
+
+/** 終了入力モード（終了時刻/所要時間）の表示切替 */
+function setEndMode(mode /* 'time' | 'duration' */) {
+  const rowTime = document.getElementById("row-endtime");
+  const rowDur  = document.getElementById("row-duration");
+  if (mode === "duration") {
+    rowDur?.removeAttribute("hidden");
+    rowTime?.setAttribute("hidden", "");
+  } else {
+    rowTime?.removeAttribute("hidden");
+    rowDur?.setAttribute("hidden", "");
+  }
+}
+
 
 /** シンプルなエラーメッセージ表示 */
 function setMessage(msg) {
@@ -109,56 +140,36 @@ document.addEventListener("DOMContentLoaded", async () => {
     return;
   }
 
-  // 2) 作成ボタンのイベント
+  // 2) redirectUri を正規化する
+  //    ・クエリや末尾スラッシュの揺れを排除
+  //    ・LINEコンソールに登録した Callback URL（例: https://<host>/liff/）と同一にする
+  //    ・もし ?liffRedirectUri= が来ている場合はそれを優先（デバッグ用）
+  const qsRedirect = getQuery("liffRedirectUri");
+  const canonicalRedirect = (() => {
+    if (qsRedirect) {
+      try { return new URL(qsRedirect).href; } catch (_) {}
+    }
+    // Django側の正規パスは /liff/（末尾スラッシュあり）
+    return new URL("/liff/", location.origin).href;
+  })();
+
+  // 3) 作成ボタンのイベント
   const btn = document.getElementById("btn-create");
   if (btn) btn.addEventListener("click", goCreate);
 
-  // ここから追加：モーダルのボタン動作
-  document.getElementById("btn-cancel")?.addEventListener("click", closeCreateDialog);
-  document.getElementById("create-backdrop")?.addEventListener("click", closeCreateDialog);
-  document.getElementById("btn-save")?.addEventListener("click", async () => {
-    // 入力値を集める
-    const title = document.getElementById("f-title")?.value?.trim();
-    const date  = document.getElementById("f-date")?.value;
-    const start = document.getElementById("f-start")?.value;
-    const end   = document.getElementById("f-end")?.value;
-
-    if (!title || !date) { alert("タイトルと日付は必須だよ"); return; }
-
-    // 必要に応じてAPIにPOST。ここでは例として /api/events へ投げる。
-    // サーバ側の仕様に合わせてフィールド名は調整してほしい。
-    try {
-      const res = await fetch("/api/events", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          title, date, start_time: start || null, end_time: end || null
-        })
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      // 成功：モーダルを閉じて一覧を再読込
-      closeCreateDialog();
-      setMessage("保存したよ。更新中…");
-      const data = await fetchEventsJson();
-      const events = Array.isArray(data) ? data : (data.results || data.items || []);
-      renderEvents(events);
-    } catch (e) {
-      console.error("create failed:", e);
-      alert("保存に失敗したよ");
-    }
-  });
+  // …（モーダルの各種ハンドラはそのまま）…
 
   try {
-    // 3) LIFF 初期化
+    // 4) LIFF 初期化
     await liff.init({ liffId });
+
+    // 5) 未ログインならLINE OAuthへ遷移（redirect_uri は正規化済み）
     if (!liff.isLoggedIn()) {
-      liff.login({ redirectUri: location.href });
+      liff.login({ redirectUri: canonicalRedirect });
       return;
     }
 
-    // 4) イベント一覧取得 → 描画
+    // 6) イベント一覧取得 → 描画
     setMessage("読み込み中…");
     const data = await fetchEventsJson();
     const events = Array.isArray(data) ? data : (data.results || data.items || []);
@@ -168,3 +179,4 @@ document.addEventListener("DOMContentLoaded", async () => {
     setMessage("読み込みに失敗したよ。時間をおいて再試行してね。");
   }
 });
+

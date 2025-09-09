@@ -221,27 +221,113 @@ def _to_str(v):
             return str(v)
     return v if isinstance(v, (int, float, bool)) else (str(v) if v is not None else None)
 
+@csrf_exempt
 def events_list(request):
     """
-    イベント一覧。実在フィールドのみで order_by し、直列化も安全に行う。
-    モデル未整備やフィールド差異があっても 500 にしない。
+    イベント一覧（GET）／イベント作成（POST）。
+    GET: ?scope_id= でスコープ絞り込み
+    POST JSON: {
+      name, date("YYYY-MM-DD"), start_hhmm("HH:MM"|null),
+      end_hhmm("HH:MM"|null), duration("1:30"/"90m"/"2h"/"120"|null),
+      capacity(int|null), scope_id(str|null)
+    }
     """
+    # ---- POST: 作成 ----
+    if request.method == 'POST':
+        try:
+            body = json.loads(request.body.decode('utf-8'))
+        except Exception:
+            return HttpResponseBadRequest('invalid json')
+
+        name = (body.get('name') or '').strip()
+        date_str = (body.get('date') or '').strip()
+        start_hhmm = (body.get('start_hhmm') or None)
+        end_hhmm = (body.get('end_hhmm') or None)
+        duration = (body.get('duration') or None)
+        capacity = body.get('capacity', None)
+        scope_id = (body.get('scope_id') or None)
+
+        if not name:
+            return HttpResponseBadRequest('name is required')
+        if not date_str:
+            return HttpResponseBadRequest('date is required')
+
+        # 日付をその日の 00:00（現在TZのaware）に
+        from . import utils
+        base_dt = utils.extract_dt_from_params_date_only({'date': date_str})
+        if not base_dt:
+            return HttpResponseBadRequest('invalid date')
+
+        # 開始
+        start_time_has_clock = False
+        if start_hhmm:
+            sdt = utils.hhmm_to_utc_on_same_day(base_dt, start_hhmm)
+            if sdt is None:
+                return HttpResponseBadRequest('invalid start_hhmm')
+            start_dt = sdt
+            start_time_has_clock = True
+        else:
+            # 時刻なし→ 00:00（UTCに合わせる）
+            start_dt = base_dt.astimezone(timezone.utc)
+
+        # 終了（終了時刻 or 所要時間）
+        end_dt = None
+        end_time_has_clock = None
+        if end_hhmm:
+            edt = utils.hhmm_to_utc_on_same_day(base_dt, end_hhmm)
+            if edt is None:
+                return HttpResponseBadRequest('invalid end_hhmm')
+            if edt <= start_dt:
+                return HttpResponseBadRequest('end must be after start')
+            end_dt = edt
+            end_time_has_clock = True
+        elif duration:
+            delta = utils.parse_duration_to_delta(duration)
+            if not delta or delta.total_seconds() <= 0:
+                return HttpResponseBadRequest('invalid duration')
+            end_dt = start_dt + delta
+            end_time_has_clock = False
+
+        # capacity
+        if capacity is not None:
+            try:
+                capacity = int(capacity)
+                if capacity <= 0:
+                    capacity = None
+            except Exception:
+                capacity = None
+
+        e = Event.objects.create(
+            name=name,
+            start_time=start_dt,
+            end_time=end_dt,
+            capacity=capacity,
+            start_time_has_clock=start_time_has_clock,
+            scope_id=scope_id or None,
+        )
+
+        # レスポンス（直列化は既存GETに合わせ安全）
+        obj = {
+            'id': e.id,
+            'name': e.name,
+            'start_time': e.start_time.isoformat() if e.start_time else None,
+            'end_time': e.end_time.isoformat() if e.end_time else None,
+            'capacity': e.capacity,
+        }
+        return JsonResponse({'ok': True, 'item': obj}, status=201)
+
+    # ---- GET: 一覧（既存の実装そのまま） ----
     if request.method != 'GET':
         return HttpResponseBadRequest('invalid method')
 
-    # LIFF から受け取るスコープ（groupId/roomId/userId）。未指定なら全体（後方互換）
     scope_id = request.GET.get('scope_id') or None
 
-    # 1) Event モデル取得（存在しないなら空配列で返す）
     try:
         EventModel = apps.get_model('events', 'Event')
     except LookupError:
         return JsonResponse({'ok': True, 'items': []}, status=200)
 
-    # 2) 利用可能なフィールド名の集合
     fields = {f.name for f in EventModel._meta.get_fields() if hasattr(f, 'attname')}
-
-    # 3) 安全な並び順（存在するものだけ適用）
     order_candidates = ['date', 'event_date', 'start_time', 'id']
     order_keys = [k for k in order_candidates if k in fields]
     try:
@@ -251,11 +337,9 @@ def events_list(request):
         if order_keys:
             qs = qs.order_by(*order_keys)
         qs = qs[:100]
-    except Exception as ex:
-        # 並び替え時にエラーが出ても空で返す（500にしない）
+    except Exception:
         return JsonResponse({'ok': True, 'items': []}, status=200)
 
-    # 4) 直列化（あるものだけ詰める）
     prefer = ['id', 'name', 'title', 'date', 'event_date', 'start_time', 'end_time', 'capacity']
     items = []
     for e in qs:
@@ -263,7 +347,6 @@ def events_list(request):
         for key in prefer:
             if key in fields:
                 obj[key] = _to_str(getattr(e, key, None))
-        # name/title の補完
         if 'name' not in obj and 'title' in obj:
             obj['name'] = obj.get('title')
         items.append(obj)

@@ -38,3 +38,7 @@ input[type="text"], input[type="date"], input[type="time"] {
 }
 .btn-primary   { background: #06c755; color: #fff; border: 0; padding: 8px 14px; border-radius: 9999px; }
 .btn-secondary { background: #f2f2f2; color: #333; border: 0; padding: 8px 14px; border-radius: 9999px; }
+
+/* --- inline errors --- */
+.err { color: #D22; font-size: 12px; line-height: 1.4; }
+.row .err { margin-top: -2px; }
