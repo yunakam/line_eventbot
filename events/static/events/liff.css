@@ -2,8 +2,19 @@
 body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Noto Sans JP, sans-serif; margin: 24px; }
 h1 { font-size: 28px; margin: 0 0 16px; }
 #btn-create { appearance: none; border: 0; border-radius: 9999px; padding: 10px 16px; background: #06c755; color: #fff; cursor: pointer; }
-#event-list { margin-top: 24px; }
-.card { border: 1px solid #eee; border-radius: 12px; padding: 12px 14px; margin: 0 0 12px; }
+
+#event-list {
+  margin-top: 24px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.card {
+  border: 1px solid #eee; border-radius: 12px;
+  padding: 12px 14px;
+  margin: 0;
+}
+
 .card h3 { margin: 0 0 4px; font-size: 16px; }
 .card p { margin: 0; font-size: 14px; color: #555; }
 .muted { color: #888; font-size: 13px; }
