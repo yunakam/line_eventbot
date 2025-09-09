@@ -174,6 +174,8 @@ def extract_dt_from_params_date_only(params: dict):
     d = params.get("date")
     if not d:
         return None
+    # スラッシュ区切りにも対応（例: 2025/09/10 -> 2025-09-10）
+    d = str(d).strip().replace("/", "-")
     dt = parse_datetime(d + " 00:00:00")
     if not dt:
         return None

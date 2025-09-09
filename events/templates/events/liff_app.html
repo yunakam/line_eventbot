@@ -95,13 +95,11 @@
   </section>
 
   <script>
-    // LIFF ID（Djangoのビューから埋め込み）
     window.LIFF_ID = "{{ LIFF_ID|default_if_none:''|escapejs }}";
-    // OAuth リダイレクト先の絶対URL（/liff/ 固定）
-    window.LIFF_REDIRECT_ABS = "{{ request.scheme }}://{{ request.get_host }}/liff/";
+    window.LIFF_REDIRECT_ABS = "{{ LIFF_REDIRECT_ABS|escapejs }}";
   </script>
-  <!-- ※ LIFF SDK はここで1回だけ読み込む（重複を削除） -->
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+
   <!-- アプリ本体 -->
   <script src="/static/events/liff.js"></script>
 </body>
