@@ -265,7 +265,8 @@ def events_list(request):
         except Exception:
             return JsonResponse({'ok': True, 'items': []}, status=200)
 
-        prefer = ['id', 'name', 'title', 'date', 'event_date', 'start_time', 'end_time', 'capacity']
+        prefer = ['id', 'name', 'title', 'date', 'event_date',
+                  'start_time', 'start_time_has_clock', 'end_time', 'capacity']
         items = []
         for e in qs:
             obj = {}
@@ -380,6 +381,7 @@ def events_list(request):
             'id': e.id,
             'name': e.name,
             'start_time': _to_str(e.start_time),
+            'start_time_has_clock': e.start_time_has_clock,
             'end_time': _to_str(e.end_time),
             'capacity': e.capacity,
         }

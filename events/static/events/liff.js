@@ -169,7 +169,8 @@
       }
       listEl.innerHTML = items.map((e) => {
         const name = e.name || "（無題）";
-        const start = e.start_time ? e.start_time.replace("T", " ").slice(0, 16) : "未設定";
+        const hasClock = !!e.start_time_has_clock;  // APIから受け取る真偽値
+        const start = e.start_time ? formatLocalDateTime(e.start_time, hasClock) : "未設定";
         const cap = (e.capacity === null || e.capacity === undefined) ? "定員なし" : `定員: ${e.capacity}`;
         return `
           <article class="card">
@@ -179,10 +180,24 @@
           </article>
         `;
       }).join("");
+
     } catch (err) {
       console.error(err);
       listEl.innerHTML = `<p class="muted">読み込みに失敗したよ</p>`;
     }
+  }
+
+  // ISO文字列を端末ローカル時刻で整形する。hasClock=false の場合は日付のみ。
+  function formatLocalDateTime(iso, hasClock) {
+    if (!iso) return "未設定";
+    const d = new Date(iso);
+    const y  = d.getFullYear();
+    const m  = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    if (!hasClock) return `${y}/${m}/${dd}`;
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${y}/${m}/${dd} ${hh}:${mm}`;
   }
 
   function escapeHtml(s) {
