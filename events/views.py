@@ -25,6 +25,7 @@ from linebot.models import (
 from linebot.exceptions import InvalidSignatureError
 
 from . import ui, utils
+from . import policies
 from .models import Event, EventDraft, EventEditDraft
 from .utils import build_liff_url_for_source
 from .handlers import create_wizard as cw, edit_wizard as ew, commands as cmd
@@ -275,6 +276,9 @@ def events_list(request):
                     obj[key] = _to_str(getattr(e, key, None))
             if 'name' not in obj and 'title' in obj:
                 obj['name'] = obj.get('title')
+            # ここを追加: 作成者IDを返す（存在すれば）
+            if 'created_by' in fields:
+                obj['created_by'] = getattr(e, 'created_by', None)
             items.append(obj)
 
         return JsonResponse({'ok': True, 'items': items}, status=200)
@@ -386,3 +390,155 @@ def events_list(request):
             'capacity': e.capacity,
         }
     }, status=201)
+
+
+@csrf_exempt
+def event_detail(request, event_id: int):
+    """
+    GET   : 単一イベント取得
+    PATCH : イベント更新（作成と同じ入力仕様）
+    DELETE: イベント削除（作成者のみ）
+    すべての更新系は id_token 検証＋権限チェックを行う。
+    """
+    # 取得
+    try:
+        e = Event.objects.get(id=event_id)
+    except Event.DoesNotExist:
+        return JsonResponse({'ok': False, 'reason': 'not found'}, status=404)
+
+    # GET はだれでも（同スコープ内で使う前提）
+    if request.method == 'GET':
+        return JsonResponse({
+            'ok': True,
+            'item': {
+                'id': e.id,
+                'name': e.name,
+                'start_time': _to_str(e.start_time),
+                'start_time_has_clock': getattr(e, 'start_time_has_clock', True),
+                'end_time': _to_str(e.end_time),
+                'capacity': e.capacity,
+                'created_by': getattr(e, 'created_by', None),
+            }
+        }, status=200)
+
+    # それ以外（PATCH/DELETE）は認証必須
+    if request.method not in ('PATCH', 'DELETE'):
+        return HttpResponseBadRequest('invalid method')
+
+    # JSON を読む（DELETE でも body を受ける）
+    try:
+        body = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except Exception:
+        return HttpResponseBadRequest('invalid json')
+
+    id_token = (body.get('id_token') or "").strip()
+    if not id_token:
+        return JsonResponse({'ok': False, 'reason': 'id_token required'}, status=401)
+
+    # id_token 検証（作成時と同じ）
+    try:
+        res = requests.post(
+            'https://api.line.me/oauth2/v2.1/verify',
+            data={'id_token': id_token, 'client_id': getattr(settings, 'MINIAPP_CHANNEL_ID', '')},
+            timeout=10
+        )
+        vr = res.json()
+        if res.status_code != 200:
+            return JsonResponse({'ok': False, 'reason': vr}, status=401)
+        user_id = vr.get('sub') or ''
+        if not user_id:
+            return JsonResponse({'ok': False, 'reason': 'verify ok but no sub'}, status=401)
+    except Exception as ex:
+        return JsonResponse({'ok': False, 'reason': str(ex)}, status=500)
+
+    # 権限チェック（作成者のみ許可。将来はポリシーで拡張）
+    if not policies.can_edit_event(user_id, e):
+        return JsonResponse({'ok': False, 'reason': 'forbidden'}, status=403)
+
+    # DELETE
+    if request.method == 'DELETE':
+        e.delete()
+        return JsonResponse({'ok': True}, status=200)
+
+    # PATCH：作成と同じ入力を解釈して上書き
+    name = (body.get('name') or '').strip() or e.name
+
+    date_str = (body.get('date') or '').strip()
+    # date が渡ってきたらその日の 00:00 を新しい基準日にする
+    base_dt = utils.extract_dt_from_params_date_only({'date': date_str}) if date_str else None
+    start_base = base_dt or e.start_time  # start_time 未指定なら既存値ベース
+    # start_time（HH:MM）が来たら合成、空文字なら「日付のみ」にする
+    start_hhmm = (body.get('start_time') or None)
+    if start_hhmm is None:
+        # 未指定：既存の start_time を維持
+        new_start = e.start_time
+        start_has_clock = getattr(e, 'start_time_has_clock', True)
+    elif start_hhmm == "":
+        # 空文字：日付のみ（00:00のまま、has_clock=False）
+        # 注意: start_base は現地TZ 00:00の aware になっている必要がある
+        if not base_dt:
+            # date が無いケースで「時刻だけ消す」は、既存日の 00:00 に寄せる
+            base_dt = utils.extract_dt_from_params_date_only({'date': e.start_time.astimezone(timezone.get_current_timezone()).strftime('%Y-%m-%d')})
+        new_start = base_dt
+        start_has_clock = False
+    else:
+        # HH:MM を合成
+        hb = base_dt or e.start_time
+        new_start = utils.hhmm_to_utc_on_same_day(hb, start_hhmm)
+        if new_start is None:
+            return JsonResponse({'ok': False, 'reason': 'invalid start_time'}, status=400)
+        start_has_clock = True
+
+    endmode  = (body.get('endmode')  or '').strip()
+    end_hhmm = (body.get('end_time') or '').strip()
+    duration = (body.get('duration') or '').strip()
+
+    new_end = e.end_time
+    if endmode == 'time' or (end_hhmm and not duration):
+        if end_hhmm:
+            new_end = utils.hhmm_to_utc_on_same_day(new_start, end_hhmm)
+            if new_end is None:
+                return JsonResponse({'ok': False, 'reason': 'invalid end_time'}, status=400)
+            if new_start and new_end <= new_start:
+                return JsonResponse({'ok': False, 'reason': 'end_time must be after start_time'}, status=400)
+    elif endmode == 'duration' or (duration and not end_hhmm):
+        delta = utils.parse_duration_to_delta(duration)
+        if not delta or delta.total_seconds() <= 0:
+            return JsonResponse({'ok': False, 'reason': 'invalid duration'}, status=400)
+        new_end = new_start + delta
+    # else: 上書きなし（そのまま）
+
+    cap = body.get('capacity', '__KEEP__')
+    if cap == '__KEEP__':
+        new_cap = e.capacity
+    elif cap in (None, ''):
+        new_cap = None
+    else:
+        try:
+            cap_int = int(cap)
+        except Exception:
+            return JsonResponse({'ok': False, 'reason': 'capacity must be integer'}, status=400)
+        if cap_int <= 0:
+            return JsonResponse({'ok': False, 'reason': 'capacity must be >=1'}, status=400)
+        new_cap = cap_int
+
+    # 反映
+    e.name = name
+    e.start_time = new_start
+    e.start_time_has_clock = start_has_clock
+    e.end_time = new_end
+    e.capacity = new_cap
+    e.save()
+
+    return JsonResponse({
+        'ok': True,
+        'item': {
+            'id': e.id,
+            'name': e.name,
+            'start_time': _to_str(e.start_time),
+            'start_time_has_clock': e.start_time_has_clock,
+            'end_time': _to_str(e.end_time),
+            'capacity': e.capacity,
+            'created_by': getattr(e, 'created_by', None),
+        }
+    }, status=200)

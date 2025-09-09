@@ -7,6 +7,11 @@
   let scopeId = "";  // groupId または userId
   let liffReady = false;
 
+  let currentUserId = "";     // ← デコードしたIDトークンの sub
+  let isEditing = false;      // ← モーダルが編集用途かどうか
+  let editingId = null;       // ← 編集対象のイベントID
+  let gItems = [];            // ← 一覧の最新データを保持
+
   // ---- ユーティリティ ----
   const $ = (sel) => document.querySelector(sel);
   const $all = (sel) => Array.from(document.querySelectorAll(sel));
@@ -17,15 +22,23 @@
     return qs.get("groupId") || qs.get("userId") || "";
   }
 
-  function showDialog() {
+  function showDialog(mode = "create") {
     $("#create-backdrop").hidden = false;
     $("#create-dialog").hidden = false;
+    // タイトル文言を切り替え
+    const title = (mode === "edit") ? "イベント編集" : "イベント作成";
+    $("#dlg-title").textContent = title;
     $("#f-title").focus();
   }
+  
   function hideDialog() {
     $("#create-backdrop").hidden = true;
     $("#create-dialog").hidden = true;
+    // 編集状態をクリア
+    isEditing = false;
+    editingId = null;
   }
+
   function clearForm() {
     $("#create-form").reset();
     hideError("#err-title");
@@ -34,6 +47,65 @@
     $("#row-endtime").hidden = false;
     $("#row-duration").hidden = true;
   }
+
+  function isoToLocalYmd(iso) {
+    const d = new Date(iso);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${dd}`;
+  }
+  function isoToLocalHhmm(iso) {
+    const d = new Date(iso);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+
+  function openEditDialog(id) {
+    const item = (gItems || []).find(x => Number(x.id) === Number(id));
+    if (!item) return;
+
+    // 既存値をフォームに流し込む
+    $("#f-title").value = item.name || "";
+    $("#f-date").value  = item.start_time ? isoToLocalYmd(item.start_time) : "";
+    $("#f-start").value = (item.start_time && item.start_time_has_clock) ? isoToLocalHhmm(item.start_time) : "";
+
+    // 終了は「時刻入力」タブに寄せておく（duration かどうか判別しづらいため）
+    document.querySelector('input[name="endmode"][value="time"]').checked = true;
+    $("#row-endtime").hidden = false;
+    $("#row-duration").hidden = true;
+    $("#f-end").value = item.end_time ? isoToLocalHhmm(item.end_time) : "";
+    $("#f-duration").value = "";
+
+    $("#f-cap").value = (item.capacity == null ? "" : String(item.capacity));
+
+    isEditing = true;
+    editingId = id;
+    showDialog("edit");  // タイトル差し替え
+  }
+
+  async function confirmDelete(id, name) {
+    if (!window.confirm(`「${name || '（無題）'}」を削除する？`)) return;
+
+    const token = await ensureFreshIdToken();
+    if (!token) {
+      if (forceReloginOnce(false)) return;
+      return;
+    }
+    try {
+      await api.deleteEvent(id, token);
+      alert("削除したよ");
+      await loadAndRender();
+    } catch (err) {
+      const msg = String(err && err.message || err || "");
+      if (/IdToken expired/i.test(msg) || /invalid[_ ]?token/i.test(msg)) {
+        if (forceReloginOnce(false)) return;
+      }
+      alert(`削除に失敗したよ: ${msg}`);
+    }
+  }
+
   function showError(sel) { const el = $(sel); if (el) el.hidden = false; }
   function hideError(sel) { const el = $(sel); if (el) el.hidden = true; }
 
@@ -50,6 +122,7 @@
     };
     sessionStorage.setItem("eventDraft", JSON.stringify(draft));
   }
+
   function restoreDraftFromSession() {
     const raw = sessionStorage.getItem("eventDraft");
     if (!raw) return false;
@@ -104,6 +177,7 @@
     } catch { return false; }
   }
 
+
   async function initLiffAndLogin(liffId) {
     await liff.init({ liffId, withLoginOnExternalBrowser: true });
     if (!liff.isLoggedIn()) {
@@ -113,8 +187,16 @@
       return false;
     }
 
+    // ここから下を関数内にまとめる
     gIdToken = liff.getIDToken() || "";
     if (!gIdToken) throw new Error("no id_token");
+
+    // 現在ユーザーID（sub）をここで記録
+    try {
+      const dec = liff.getDecodedIDToken && liff.getDecodedIDToken();
+      currentUserId = (dec && dec.sub) || "";
+    } catch {}
+
     return true;
   }
 
@@ -138,6 +220,7 @@
       if (!res.ok) throw new Error(`fetch events failed: ${res.status}`);
       return await res.json();
     },
+
     async createEvent(payload) {
       // サーバでIDトークンを再検証するため、ここで id_token を必ず渡す
       const res = await fetch(`/api/events`, {
@@ -153,6 +236,36 @@
       }
       return data;
     },
+
+    async updateEvent(id, payload) {
+      const res = await fetch(`/api/events/${id}`, {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        const r = data.reason ? (typeof data.reason === "string" ? data.reason : JSON.stringify(data.reason)) : `HTTP ${res.status}`;
+        throw new Error(r);
+      }
+      return data;
+    },
+    async deleteEvent(id, idToken) {
+      const res = await fetch(`/api/events/${id}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ id_token: idToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        const r = data.reason ? (typeof data.reason === "string" ? data.reason : JSON.stringify(data.reason)) : `HTTP ${res.status}`;
+        throw new Error(r);
+      }
+      return data;
+    },
+
   };
 
 
@@ -167,16 +280,25 @@
         listEl.innerHTML = `<p class="muted">イベントはまだないよ</p>`;
         return;
       }
+
+      gItems = items;  // ← 一覧をキャッシュ
       listEl.innerHTML = items.map((e) => {
         const name = e.name || "（無題）";
-        const hasClock = !!e.start_time_has_clock;  // APIから受け取る真偽値
+        const hasClock = !!e.start_time_has_clock;
         const start = e.start_time ? formatLocalDateTime(e.start_time, hasClock) : "未設定";
         const cap = (e.capacity === null || e.capacity === undefined) ? "定員なし" : `定員: ${e.capacity}`;
+        const isAuthor = !!e.created_by && !!currentUserId && (e.created_by === currentUserId);
         return `
-          <article class="card">
+          <article class="card" data-id="${e.id}">
             <h3>${escapeHtml(name)}</h3>
             <p>開始: ${escapeHtml(start)}</p>
             <p>${escapeHtml(cap)}</p>
+            ${isAuthor ? `
+              <div class="actions">
+                <button class="btn-link" data-act="edit" data-id="${e.id}">編集</button>
+                <button class="btn-link dangerous" data-act="delete" data-id="${e.id}" data-name="${escapeHtml(name)}">削除</button>
+              </div>
+            ` : ``}
           </article>
         `;
       }).join("");
@@ -234,10 +356,10 @@ await liff.init({ liffId, withLoginOnExternalBrowser: true });
 
   // ---- フォームの保存ハンドラ ----
   async function handleSave() {
-    // 必須入力チェック
+    // 必須チェック
     const name = ($("#f-title").value || "").trim();
     const date = ($("#f-date").value || "").trim();
-    const start_time = ($("#f-start").value || "").trim(); // 任意
+    const start_time = ($("#f-start").value || "").trim();
     const endmode = ($all('input[name="endmode"]').find(r => r.checked)?.value || "").trim();
     const end_time = ($("#f-end").value || "").trim();
     const duration = ($("#f-duration").value || "").trim();
@@ -248,12 +370,10 @@ await liff.init({ liffId, withLoginOnExternalBrowser: true });
     if (!date) { showError("#err-date");  hasError = true; } else { hideError("#err-date"); }
     if (hasError) return;
 
-
-    // 直前に鮮度チェック。足りなければ一度だけ強制リフレッシュへ。
     const token = await ensureFreshIdToken();
     if (!token) {
-      if (forceReloginOnce(true)) return; // ドラフト保存→ログアウト→ログイン → 復帰後に再試行
-      return; // 既に一度試していればここで終了
+      if (forceReloginOnce(true)) return;
+      return;
     }
 
     const payload = {
@@ -269,27 +389,28 @@ await liff.init({ liffId, withLoginOnExternalBrowser: true });
 
     try {
       $("#btn-save").disabled = true;
-      await api.createEvent(payload);
+
+      if (isEditing && editingId != null) {
+        await api.updateEvent(editingId, payload);
+      } else {
+        await api.createEvent(payload);
+      }
+
       hideDialog();
       clearForm();
       alert("保存したよ");
       await loadAndRender();
-      // 成功したのでフラグは掃除
       sessionStorage.removeItem(REL_LOGIN_FLAG);
-
     } catch (err) {
       const msg = String(err && err.message || err || "");
-      // 期限切れ or 無効トークンのときだけ再ログインを試す
       if (/IdToken expired/i.test(msg) || /invalid[_ ]?token/i.test(msg)) {
         if (forceReloginOnce(true)) return;
       }
       console.error(err);
       alert(`保存に失敗したよ: ${msg}`);
-
     } finally {
       $("#btn-save").disabled = false;
     }
-
   }
 
 
@@ -331,6 +452,20 @@ await liff.init({ liffId, withLoginOnExternalBrowser: true });
       console.error(e);
       $("#event-list").innerHTML = `<p class="muted">初期化に失敗したよ</p>`;
     }
+
+
+    $("#event-list").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-act]");
+      if (!btn) return;
+      const act = btn.dataset.act;
+      const id  = Number(btn.dataset.id);
+      if (act === "edit") {
+        openEditDialog(id);
+      } else if (act === "delete") {
+        confirmDelete(id, btn.dataset.name || "");
+      }
+    });
+
   });
 
 })();
