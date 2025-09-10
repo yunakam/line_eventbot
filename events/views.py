@@ -1,9 +1,5 @@
 # events/views.py
-import os
-import re
-import unicodedata
-import json
-import requests  
+import os, re, unicodedata, json, requests
 from datetime import date, time, timedelta, datetime
 
 from django.apps import apps
@@ -20,7 +16,7 @@ from linebot import LineBotApi, WebhookParser, WebhookHandler
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
     PostbackEvent, TemplateSendMessage, PostbackAction,
-    QuickReply, QuickReplyButton, URIAction
+    QuickReply, QuickReplyButton, URIAction, FlexSendMessage
     )
 from linebot.exceptions import InvalidSignatureError
 
@@ -60,6 +56,21 @@ def handle_text_message(event):
     text = (event.message.text or "").strip()
     source = event.source
 
+    # まず「グループID」要求に応答
+    if text in ("グループID", "group id", "groupid", "gid"):
+        if getattr(source, "type", "") == "group":
+            gid = getattr(source, "group_id", "")
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=f"このグループIDは {gid} だよ")
+            )
+        else:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="グループのトークで呼び出してね")
+            )
+        return
+    
     # 「イベント」での分岐
     if text in ("イベント", "event", "ｲﾍﾞﾝﾄ"):
         # グループでは「1:1で作成してね」と最小ガイダンスだけ返す
@@ -217,6 +228,7 @@ def verify_idtoken(request):
     except Exception as e:
         return JsonResponse({'ok': False, 'reason': str(e)}, status=500)
 
+
 def _to_str(v):
     """date/datetime/time は ISO っぽく、それ以外は安全に str 化"""
     if isinstance(v, (datetime, date, time)):
@@ -367,7 +379,7 @@ def events_list(request):
 
     scope_id = (body.get('scope_id') or '').strip() or None
 
-    # 3) 登録
+    # 3-1) 登録
     e = Event.objects.create(
         name=name,
         start_time=start_dt,
@@ -377,6 +389,56 @@ def events_list(request):
         created_by=user_id,
         scope_id=scope_id,
     )
+
+    # 3-2) イベント作成をグループに通知
+    # - フロントから notify: true が来ており
+    # - scope_id（共有先）が指定されている場合のみ、対象グループにpushする
+    notify = bool(body.get('notify', False))
+    if notify and scope_id:
+        try:
+            # このグループのイベント一覧に遷移するLIFF URLを生成
+            liff_url = utils.build_liff_url_for_source(source_type="group", group_id=scope_id)
+
+            flex_contents = {
+                "type": "bubble",
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": f"「{e.name}」が作成されました！",
+                            "wrap": True,
+                            "weight": "bold",
+                            "size": "md"
+                        },
+                        {
+                            "type": "text",
+                            "text": "グループのイベントを見る",
+                            "wrap": True,
+                            "size": "sm",
+                            "margin": "md",
+                            "color": "#1E90FF",  # 青
+                            "action": {
+                                "type": "uri",
+                                "label": "ここ",
+                                "uri": liff_url
+                            }
+                        },
+                    ]
+                }
+            }
+            msg = FlexSendMessage(
+                alt_text=f"「{e.name}」が作成されました！グループのイベントは {liff_url} から見れるよ",
+                contents=flex_contents
+            )
+            
+            # 現時点では単一グループ共有前提のため scope_id へそのままpush
+            line_bot_api.push_message(scope_id, msg)
+            
+        except Exception as ex:
+            logger.warning("notify push failed: %s", ex)
+
 
     # 4) レスポンス（一覧APIと近い形で返す）
     return JsonResponse({
@@ -542,3 +604,72 @@ def event_detail(request, event_id: int):
             'created_by': getattr(e, 'created_by', None),
         }
     }, status=200)
+
+
+@csrf_exempt
+def group_validate(request):
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'reason': 'method_not_allowed'}, status=405)
+    try:
+        body = json.loads(request.body.decode('utf-8'))
+    except Exception:
+        return JsonResponse({'ok': False, 'reason': 'bad_json'}, status=400)
+
+    id_token = (body.get('id_token') or '').strip()
+    group_id = (body.get('group_id') or '').strip()
+    if not id_token or not group_id:
+        return JsonResponse({'ok': False, 'reason': 'missing_params'}, status=400)
+
+    # 1) IDトークン検証（既存の作成処理と同様の手順）
+    try:
+        payload = _verify_id_token_internal(id_token)  # 下の小関数を利用
+        user_id = payload.get('sub') or None
+    except Exception as ex:
+        logger.warning("verify failed: %s", ex)
+        return JsonResponse({'ok': False, 'reason': 'invalid_id_token'}, status=401)
+
+    # 2) グループ存在＆Bot参加チェック（名前・アイコン取得）
+    try:
+        summary = line_bot_api.get_group_summary(group_id)  # 要：Botがグループ参加中
+        group_name = getattr(summary, 'group_name', None) or getattr(summary, 'groupName', None) or ''
+        picture_url = getattr(summary, 'picture_url', None) or getattr(summary, 'pictureUrl', None) or ''
+    except Exception as ex:
+        logger.info("get_group_summary failed: %s", ex)
+        return JsonResponse({'ok': False, 'reason': 'not_joined_or_invalid'}, status=400)
+
+    # 3) ユーザー在籍確認（任意）
+    user_in_group = None
+    if user_id:
+        try:
+            _ = line_bot_api.get_group_member_profile(group_id, user_id)
+            user_in_group = True
+        except Exception:
+            user_in_group = False
+
+    return JsonResponse({
+        'ok': True,
+        'group': {
+            'id': group_id,
+            'name': group_name,
+            'pictureUrl': picture_url,
+        },
+        'user_in_group': user_in_group,
+    }, status=200)
+
+
+def _verify_id_token_internal(id_token: str) -> dict:
+    """
+    LINEのIDトークンを **LIFFチャネルID(settings.MINIAPP_CHANNEL_ID)** で検証する。
+    """
+    import requests
+    channel_id = getattr(settings, 'MINIAPP_CHANNEL_ID', '')
+    resp = requests.post(
+        'https://api.line.me/oauth2/v2.1/verify',
+        data={'id_token': id_token, 'client_id': channel_id},
+        timeout=10
+    )
+    data = resp.json()
+    if resp.status_code != 200 or not data.get('sub'):
+        logger.warning("verify status=%s body=%s", resp.status_code, data)
+        raise ValueError('verify failed')
+    return data

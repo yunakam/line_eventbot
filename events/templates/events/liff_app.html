@@ -82,7 +82,25 @@
           <input id="f-cap" name="capacity" type="number" inputmode="numeric" min="1" step="1" placeholder="数字を入力してね">
         </label>
 
-        <p class="muted">開始・終了は未入力でもOKだよ。所要時間は 1:30 / 90m / 2h / 120 などで入力できるよ。</p>
+        <!-- 共有先グループ（任意）: 空なら「このトーク」のgroupId/userIdを使用 -->
+        <label class="row">
+          <span>共有するグループ</span>
+          <input id="f-group" name="group_id" type="text" placeholder="ここにグループIDを入れてね（空ならこのトークを使うよ）">
+        </label>
+
+        <!-- グループ情報プレビュー（validate成功時に表示） -->
+        <div id="group-preview" class="row" style="display:none;align-items:center;gap:8px;">
+          <img id="group-icon" src="" alt="" style="width:28px;height:28px;border-radius:50%;">
+          <span id="group-name"></span>
+        </div>
+
+        <!-- 通知（最初は非活性/非表示） -->
+        <label id="row-notify" class="row" style="display:none;">
+          <span>通知</span>
+          <input id="f-notify" name="notify" type="checkbox" disabled>
+          <small style="margin-left:8px;">イベント作成通知をグループに送る</small>
+        </label>
+
       </form>
 
 

@@ -209,6 +209,76 @@
     return gIdToken;
   }
 
+  async function validateGroupSelection({ silent = true } = {}) {
+    const typed   = ($("#f-group")?.value || "").trim();
+    const urlGrp  = new URLSearchParams(location.search).get("groupId") || "";
+    const token   = await ensureFreshIdToken();
+    const pat     = /^[CR][0-9a-f]{32}$/i;
+
+    // ローカル形式チェック
+    if (typed && !pat.test(typed)) {
+      if (!silent) alert("不正なIDだよ");
+      const rn = $("#row-notify"), fn = $("#f-notify"), gp = $("#group-preview");
+      if (rn) rn.style.display = "none";
+      if (fn) { fn.checked = false; fn.disabled = true; }
+      if (gp) gp.style.display = "none";
+      return { ok: false };
+    }
+
+    const candidate = typed || urlGrp;
+    if (!candidate) {
+      const rn = $("#row-notify"), fn = $("#f-notify"), gp = $("#group-preview");
+      if (rn) rn.style.display = "none";
+      if (fn) { fn.checked = false; fn.disabled = true; }
+      if (gp) gp.style.display = "none";
+      return { ok: false };
+    }
+
+    // サーバ検証
+    const res = await fetch(`/api/groups/validate`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ id_token: token, group_id: candidate }),
+    });
+    const data = await res.json().catch(() => ({}));
+
+    if (res.status === 401) {
+      // トークン不正/期限切れ
+      const rn = $("#row-notify"), fn = $("#f-notify"), gp = $("#group-preview");
+      if (rn) rn.style.display = "none";
+      if (fn) { fn.checked = false; fn.disabled = true; }
+      if (gp) gp.style.display = "none";
+      if (!silent) alert("ログインの有効期限が切れたみたい。もう一度ログインしてね");
+      return { ok: false };
+    }
+
+    if (!res.ok || !data.ok) {
+      // groupId 不正 or Bot未参加など（400）
+      const rn = $("#row-notify"), fn = $("#f-notify"), gp = $("#group-preview");
+      if (rn) rn.style.display = "none";
+      if (fn) { fn.checked = false; fn.disabled = true; }
+      if (gp) gp.style.display = "none";
+      if (!silent) alert("不正なIDだよ");
+      return { ok: false };
+    }
+
+    // 成功 → プレビューと通知UIを解放
+    const gp = $("#group-preview"), gi = $("#group-icon"), gn = $("#group-name");
+    if (gp && gi && gn) {
+      const name = data.group?.name || candidate;
+      const pic  = data.group?.pictureUrl || "";
+      if (pic) { gi.src = pic; gi.style.display = "inline-block"; }
+      else { gi.style.display = "none"; }
+      gn.textContent = name;
+      gp.style.display = "flex";
+    }
+    const rn = $("#row-notify"), fn = $("#f-notify");
+    if (rn) rn.style.display = "flex";
+    if (fn) fn.disabled = false;
+
+    return { ok: true, groupId: data.groupId || candidate };
+  }
 
   // ---- APIラッパ ----
   const api = {
@@ -369,32 +439,6 @@
   }
 
 
-  // ---- LIFF初期化＆IDトークン取得 ----
-  async function initLiffAndAuth() {
-    const liffId = (window.LIFF_ID || "").trim();
-    if (!liffId) {
-      alert("初期化に失敗したよ（LIFF IDが未設定だよ）");
-      throw new Error("LIFF_ID missing");
-    }
-await liff.init({ liffId, withLoginOnExternalBrowser: true });
-
-    if (!liff.isLoggedIn()) {
-      // ここでリダイレクト先を明示（/liff/ 固定のはず）
-      const redirectUri = (window.LIFF_REDIRECT_ABS || location.href);
-      liff.login({ redirectUri });
-      return false; // 以降はリダイレクト後に実行される
-    }
-    idToken = liff.getIDToken() || "";
-    if (!idToken) {
-      alert("初期化に失敗したよ（IDトークンが取得できないよ）");
-      throw new Error("no idToken");
-    }
-    // 参考：検証APIはサーバ作成時にも呼ぶため、ここでのverifyは省略可
-    liffReady = true;
-    return true;
-  }
-
-
   // ---- フォームの保存ハンドラ ----
   async function handleSave() {
     // 必須チェック
@@ -417,6 +461,25 @@ await liff.init({ liffId, withLoginOnExternalBrowser: true });
       return;
     }
 
+    // 共有先バリデーション → scope_id / notify 決定
+    const urlHasGroup = /[?&]groupId=/.test(location.search);
+    const inputGroup  = ($("#f-group")?.value || "").trim();
+    const notifyChecked = !!$("#f-notify")?.checked;
+
+    let chosenScopeId = scopeId;  // 既定は現コンテキスト（1:1なら userId / グループなら groupId）
+    let notify = false;
+
+    // URLにgroupIdがある / 入力がある / 通知ON のいずれかなら validate を強制
+    if (urlHasGroup || inputGroup || notifyChecked) {
+      const v = await validateGroupSelection({ silent: false }); // ← 保存時はアラート許可
+      if (!v.ok) {
+        alert("共有するグループを選んでね");
+        return;
+      }
+      chosenScopeId = v.groupId;
+      notify = notifyChecked;
+    }
+
     const payload = {
       id_token: token,
       name, date,
@@ -425,7 +488,8 @@ await liff.init({ liffId, withLoginOnExternalBrowser: true });
       end_time,
       duration,
       capacity: capacity ? Number(capacity) : null,
-      scope_id: scopeId,
+      scope_id: chosenScopeId,
+      notify,                   // グループへの通知フラグ
     };
 
     try {
@@ -473,7 +537,22 @@ await liff.init({ liffId, withLoginOnExternalBrowser: true });
     $("#create-backdrop").addEventListener("click", () => { hideDialog(); });
     $("#btn-save").addEventListener("click", () => { handleSave(); });
 
-    // LIFF初期化（新：トークン管理付き）→ 一覧表示
+    // 共有グループ入力で validate を発火（blur / change / input）
+    const grp = document.querySelector('#f-group');
+    if (grp) {
+      const run = () => validateGroupSelection().catch(() => {});
+      grp.addEventListener('blur',   run);
+      grp.addEventListener('change', run);
+      let t=null;
+      grp.addEventListener('input', () => { clearTimeout(t); t=setTimeout(run, 400); });
+    }
+
+    // URLにgroupIdがある場合は自動validate（グループから開いたケース）
+    if (/[?&]groupId=/.test(location.search)) {
+      try { await validateGroupSelection(); } catch {}
+    }
+
+    // LIFF初期化 → 一覧表示（略）
     try {
       const liffId = (window.LIFF_ID || "").trim();
       if (!liffId) {
