@@ -156,10 +156,28 @@
       alert("ログインの更新に失敗したみたい。時間を置いて試してね");
       return false;
     }
+
     sessionStorage.setItem(REL_LOGIN_FLAG, "1");
-    const redirectUri = (window.LIFF_REDIRECT_ABS || location.href).replace(/^http:/, 'https:');
+
+    // いまのURLに groupId / userId があればヒントとして保存
+    const hasScope = /[?&](groupId|userId)=/.test(location.search);
+    if (hasScope) {
+      const qs = new URLSearchParams(location.search);
+      const hint = qs.get("groupId")
+        ? `groupId=${qs.get("groupId")}`
+        : (qs.get("userId") ? `userId=${qs.get("userId")}` : "");
+      if (hint) sessionStorage.setItem("scopeHint", hint);
+    }
+
+    // redirectUri は「scope があるなら今のURL」を優先
+    let redirectUri = location.href.replace(/^http:/, 'https:');
+    if (!hasScope) {
+      redirectUri = (window.LIFF_REDIRECT_ABS || redirectUri).replace(/^http:/, 'https:');
+    }
+
     try { liff.logout(); } catch {}
     liff.login({ redirectUri });
+    
     return true;
   }
 
@@ -181,11 +199,22 @@
   async function initLiffAndLogin(liffId) {
     await liff.init({ liffId, withLoginOnExternalBrowser: true });
     if (!liff.isLoggedIn()) {
-      // サーバから受け取った絶対URLを優先し、http → https 置換
-      const redirectUri = (window.LIFF_REDIRECT_ABS || location.href).replace(/^http:/, 'https:');
+      const hasScope = /[?&](groupId|userId)=/.test(location.search);
+      if (hasScope) {
+        const qs = new URLSearchParams(location.search);
+        const hint = qs.get("groupId")
+          ? `groupId=${qs.get("groupId")}`
+          : (qs.get("userId") ? `userId=${qs.get("userId")}` : "");
+        if (hint) sessionStorage.setItem("scopeHint", hint);
+      }
+      let redirectUri = location.href.replace(/^http:/, 'https:');
+      if (!hasScope) {
+        redirectUri = (window.LIFF_REDIRECT_ABS || redirectUri).replace(/^http:/, 'https:');
+      }
       liff.login({ redirectUri });
       return false;
     }
+
 
     // ここから下を関数内にまとめる
     gIdToken = liff.getIDToken() || "";
@@ -282,14 +311,43 @@
 
   // ---- APIラッパ ----
   const api = {
+    // 一覧取得：scopeId が空ならクエリを付けず「全件」取得に戻す
     async fetchEvents() {
-      const res = await fetch(`/api/events?scope_id=${encodeURIComponent(scopeId)}`, {
+      const url = (scopeId && String(scopeId).trim())
+        ? `/api/events?scope_id=${encodeURIComponent(scopeId)}`
+        : `/api/events`;
+      const res = await fetch(url, {
         credentials: "same-origin",
         headers: { "Accept": "application/json" },
       });
       if (!res.ok) throw new Error(`fetch events failed: ${res.status}`);
       return await res.json();
     },
+
+
+    // 自分が作成したイベント一覧（1:1用）
+    async fetchMyEvents() {
+      const token = await ensureFreshIdToken();
+      if (!token) {
+        // 再ログインを発火（空配列で誤表示にしない）
+        forceReloginOnce(false);
+        throw new Error("id_token missing");
+      }
+      const res = await fetch(`/api/events/mine`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ id_token: token }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        const r = data && data.reason || `HTTP ${res.status}`;
+        throw new Error(r);
+      }
+      return { items: data.items || [] };
+    },
+
+
 
     async createEvent(payload) {
       // サーバでIDトークンを再検証するため、ここで id_token を必ず渡す
@@ -344,8 +402,13 @@
     const listEl = $("#event-list");
     listEl.innerHTML = `<p class="muted">読み込み中…</p>`;
     try {
-      const data = await api.fetchEvents();
+      // Uで始まるscopeId（=1:1コンテキスト）のときは「自分が作成したイベント」を取得
+      const data = (scopeId && /^U/.test(scopeId))
+        ? await api.fetchMyEvents()
+        : await api.fetchEvents();
+
       const items = (data && data.items) || [];
+
       if (!items.length) {
         listEl.innerHTML = `<p class="muted">イベントはまだないよ</p>`;
         return;
@@ -441,7 +504,6 @@
 
   // ---- フォームの保存ハンドラ ----
   async function handleSave() {
-    // 必須チェック
     const name = ($("#f-title").value || "").trim();
     const date = ($("#f-date").value || "").trim();
     const start_time = ($("#f-start").value || "").trim();
@@ -461,21 +523,24 @@
       return;
     }
 
-    // 共有先バリデーション → scope_id / notify 決定
-    const urlHasGroup = /[?&]groupId=/.test(location.search);
-    const inputGroup  = ($("#f-group")?.value || "").trim();
+    // 共有先の決定とバリデーション
+    const urlHasGroup   = /[?&]groupId=/.test(location.search);
+    const inputGroup    = ($("#f-group")?.value || "").trim();
     const notifyChecked = !!$("#f-notify")?.checked;
 
-    let chosenScopeId = scopeId;  // 既定は現コンテキスト（1:1なら userId / グループなら groupId）
+    let chosenScopeId = scopeId || ""; // 既定は現在のコンテキスト（1:1なら userId / グループなら groupId）
     let notify = false;
 
-    // URLにgroupIdがある / 入力がある / 通知ON のいずれかなら validate を強制
+    // 1) 「通知ONなのに共有グループ未選択」は保存不可
+    if (notifyChecked && !urlHasGroup && !inputGroup) {
+      alert("共有するグループを選んでね");
+      return;
+    }
+
+    // 2) URLにgroupIdがある／入力がある／通知ON → validateを必ず実施
     if (urlHasGroup || inputGroup || notifyChecked) {
-      const v = await validateGroupSelection({ silent: false }); // ← 保存時はアラート許可
-      if (!v.ok) {
-        alert("共有するグループを選んでね");
-        return;
-      }
+      const v = await validateGroupSelection({ silent: false });
+      if (!v || !v.ok) return;  // validate失敗時は保存中止（アラートはvalidate側で出す）
       chosenScopeId = v.groupId;
       notify = notifyChecked;
     }
@@ -489,7 +554,7 @@
       duration,
       capacity: capacity ? Number(capacity) : null,
       scope_id: chosenScopeId,
-      notify,                   // グループへの通知フラグ
+      notify, // グループへの通知フラグ
     };
 
     try {
@@ -523,6 +588,21 @@
   document.addEventListener("DOMContentLoaded", async () => {
     scopeId = getScopeIdFromUrl();
 
+    // ログイン復帰でURLから消えた場合のフォールバック
+    if (!scopeId) {
+      const hint = sessionStorage.getItem("scopeHint") || "";
+      const [k, v] = hint.split("=");
+      if (v) {
+        scopeId = v;
+        // URLにも書き戻して以後安定させる
+        const u = new URL(location.href);
+        u.searchParams.set(k, v);
+        history.replaceState(null, "", u.toString());
+        // 必要なら一度きりのヒントなので消しておく
+        // sessionStorage.removeItem("scopeHint");
+      }
+    }
+
     // endmode 切替（終了時刻 or 所要時間）
     $all('input[name="endmode"]').forEach(radio => {
       radio.addEventListener("change", () => {
@@ -532,7 +612,11 @@
       });
     });
 
-    $("#btn-create").addEventListener("click", () => { showDialog(); });
+    $("#btn-create").addEventListener("click", async () => {
+      showDialog();    // モーダルを開く
+      const items = await fetchGroupSuggest("");  // グループ候補を取得
+      renderSuggest(items);
+    });
     $("#btn-cancel").addEventListener("click", () => { hideDialog(); });
     $("#create-backdrop").addEventListener("click", () => { hideDialog(); });
     $("#btn-save").addEventListener("click", () => { handleSave(); });
@@ -546,6 +630,97 @@
       let t=null;
       grp.addEventListener('input', () => { clearTimeout(t); t=setTimeout(run, 400); });
     }
+
+
+    async function fetchGroupSuggest(keyword = "") {
+      const token = await ensureFreshIdToken(); // 既存
+      const res = await fetch("/api/groups/suggest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ id_token: token, q: keyword, limit: 20, only_my: false }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) return [];
+      return data.items || [];
+    }
+
+
+    function renderSuggest(items) {
+      const box = document.querySelector("#group-suggest");
+      if (!box) return;
+      box.style.display = "block";
+      if (!items.length) {
+        box.innerHTML = `
+          <div class="card muted">
+            イベントが共有できるグループが見つからないよ。<br>
+            まずはイベントボットを共有したいLINEグループに招待してね。
+          </div>`;
+        return;
+      }
+
+      box.style.display = "block";
+
+      box.innerHTML = items.map(it => {
+        const name = it.name && it.name.trim() ? it.name : it.id;
+        const pic  = it.pictureUrl && it.pictureUrl.trim() ? it.pictureUrl : "";
+        return `
+          <div class="card" data-gid="${it.id}" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            ${pic ? `<img src="${pic}" alt="" style="width:28px;height:28px;border-radius:50%;">` : ``}
+            <div style="font-size:14px;">${escapeHtml(name)}</div>
+          </div>
+        `;
+      }).join("");
+
+
+    }
+
+    // 候補クリックで入力→validate
+    document.querySelector("#group-suggest")?.addEventListener("click", async (ev) => {
+      const card = ev.target.closest(".card[data-gid]");
+      if (!card) return;
+
+      const gid   = card.dataset.gid || "";
+      const gname = card.dataset.gname || "";
+      const gpic  = card.dataset.pic || "";
+
+      const input = document.querySelector("#f-group");
+      if (input) input.value = gid;
+
+      const sg = document.querySelector("#selected-group");
+      if (sg) {
+        sg.innerHTML = `
+          ${gpic ? `<img src="${gpic}" alt="">` : ``}
+          <span class="name">${escapeHtml(gname)}</span>
+          <span class="clear" id="sg-clear">変更</span>
+        `;
+        sg.style.display = "flex";
+      }
+
+      // サジェストは閉じてもよい
+      const box = document.querySelector("#group-suggest");
+      if (box) { box.style.display = "none"; box.innerHTML = ""; }
+
+      await validateGroupSelection({ silent: false });
+    });
+
+    // 「変更」を押したら再び候補表示（任意）
+    document.addEventListener("click", (e) => {
+      if (e.target && e.target.id === "sg-clear") {
+        const box = document.querySelector("#group-suggest");
+        if (box) { box.style.display = "block"; }
+        // 既存の「候補を表示」ロジックを再利用
+        document.querySelector("#btn-suggest")?.click();
+      }
+    });
+
+
+    // 「候補を表示」ボタン
+    document.querySelector("#btn-suggest")?.addEventListener("click", async () => {
+      const kw = (document.querySelector("#f-group")?.value || "").trim();
+      const items = await fetchGroupSuggest(kw);
+      renderSuggest(items);
+    });
+
 
     // URLにgroupIdがある場合は自動validate（グループから開いたケース）
     if (/[?&]groupId=/.test(location.search)) {
@@ -562,11 +737,18 @@
       }
       const ok = await initLiffAndLogin(liffId);
       if (ok) {
+        // URLにscopeが無ければ、IDトークンのsubで補完（=1:1スコープ）
+        if (!scopeId && currentUserId) {
+          scopeId = currentUserId;
+          const u = new URL(location.href);
+          u.searchParams.set("userId", currentUserId);
+          history.replaceState(null, "", u.toString());
+        }
+
         await loadAndRender();
-        // 復帰時はドラフトだけ復元（フラグはここでは消さない：ループ防止）
+        // 復帰時はドラフトだけ復元
         restoreDraftFromSession();
       }
-
 
     } catch (e) {
       console.error(e);

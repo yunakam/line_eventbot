@@ -11,18 +11,20 @@ from django.conf import settings
 from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 from django.urls import reverse
+from django.db.models import Q
 
 from linebot import LineBotApi, WebhookParser, WebhookHandler
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
     PostbackEvent, TemplateSendMessage, PostbackAction,
-    QuickReply, QuickReplyButton, URIAction, FlexSendMessage
+    QuickReply, QuickReplyButton, URIAction, FlexSendMessage,
+    JoinEvent, LeaveEvent
     )
 from linebot.exceptions import InvalidSignatureError
 
 from . import ui, utils
 from . import policies
-from .models import Event, EventDraft, EventEditDraft
+from .models import KnownGroup, Event, EventDraft, EventEditDraft
 from .utils import build_liff_url_for_source
 from .handlers import create_wizard as cw, edit_wizard as ew, commands as cmd
 
@@ -51,10 +53,36 @@ line_bot_api = LineBotApi(_access_token)
 handler = WebhookHandler(_channel_secret)
 
 
+def _touch_known_group(group_id: str, *, refresh_summary: bool = False):
+    """
+    KnownGroup を upsert し、**既存行でも joined を True に戻す**。
+    refresh_summary=True のときは get_group_summary() で名前/アイコンも更新。
+    """
+    if not group_id:
+        return
+    obj, _ = KnownGroup.objects.get_or_create(group_id=group_id, defaults={"joined": True})
+    if obj.joined is False:
+        obj.joined = True
+    obj.last_seen_at = timezone.now()
+    if refresh_summary:
+        try:
+            s = line_bot_api.get_group_summary(group_id)
+            obj.name = getattr(s, "group_name", None) or getattr(s, "groupName", "") or obj.name
+            obj.picture_url = getattr(s, "picture_url", None) or getattr(s, "pictureUrl", "") or obj.picture_url
+            obj.last_summary_at = timezone.now()
+        except Exception:
+            pass
+    obj.save()
+
+    
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     text = (event.message.text or "").strip()
     source = event.source
+
+    if getattr(source, "type", "") == "group":
+        _touch_known_group(getattr(source, "group_id", ""), refresh_summary=False)
 
     # まず「グループID」要求に応答
     if text in ("グループID", "group id", "groupid", "gid"):
@@ -94,8 +122,146 @@ def handle_text_message(event):
         event.reply_token,
         TextSendMessage(text=f"受け付けたよ: {text}")
     )
-    
-    
+
+
+# グループにボットが追加された瞬間に KnownGroup を更新
+@handler.add(JoinEvent)
+def handle_join(event):
+    st = getattr(event.source, "type", "")
+    gid = getattr(event.source, "group_id", "") or getattr(event.source, "room_id", "")
+    logger.info("JoinEvent received: type=%s id=%s", st, gid)
+    if st == "group" and gid:
+        _touch_known_group(gid, refresh_summary=True)
+
+
+# ボットがグループから外れたらフラグを落とす
+@handler.add(LeaveEvent)
+def handle_leave(event):
+    try:
+        gid = getattr(event.source, "group_id", "") or getattr(event.source, "room_id", "")
+        if gid:
+            KnownGroup.objects.filter(group_id=gid).update(joined=False, last_seen_at=timezone.now())
+    except Exception:
+        pass
+
+
+@csrf_exempt
+def groups_suggest(request):
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'reason': 'method_not_allowed'}, status=405)
+    try:
+        body = json.loads(request.body.decode('utf-8'))
+    except Exception:
+        return JsonResponse({'ok': False, 'reason': 'bad_json'}, status=400)
+
+    id_token = (body.get('id_token') or '').strip()
+    q   = (body.get('q') or '').strip()
+    lim = body.get('limit', 20)
+    only_my  = bool(body.get('only_my', False))
+
+    # === ここが重要: only_my=True のときだけ検証 ===
+    user_id = None
+    if only_my:
+        try:
+            payload = _verify_id_token_internal(id_token)
+            user_id = payload.get('sub') or None
+        except Exception:
+            return JsonResponse({'ok': False, 'reason': 'invalid_id_token'}, status=401)
+
+    # Bot参加グループ
+    qs = KnownGroup.objects.filter(joined=True)
+    if q:
+        qs = qs.filter(name__icontains=q)
+    qs = qs.order_by('-last_seen_at')[:100]
+
+    items = []
+    for g in qs:
+        if len(items) >= lim:
+            break
+        gid = g.group_id
+
+        # === 在籍チェックも only_my=True のときだけ ===
+        if only_my:
+            try:
+                line_bot_api.get_group_member_profile(gid, user_id)
+            except Exception:
+                continue
+
+        # 名前・アイコンの不足を補完（任意）
+        name = g.name or ""
+        pic  = g.picture_url or ""
+        if not name or not pic:
+            try:
+                s = line_bot_api.get_group_summary(gid)
+                name2 = getattr(s, "group_name", None) or getattr(s, "groupName", "") or ""
+                pic2  = getattr(s, "picture_url", None) or getattr(s, "pictureUrl", "") or ""
+                if name2 and name != name2:
+                    g.name = name = name2
+                if pic2 and pic != pic2:
+                    g.picture_url = pic = pic2
+                g.last_summary_at = timezone.now()
+                g.save(update_fields=["name", "picture_url", "last_summary_at"])
+            except Exception:
+                pass
+
+        items.append({'id': gid, 'name': name or gid, 'pictureUrl': pic or ''})
+
+    return JsonResponse({'ok': True, 'items': items, 'total': len(items)}, status=200)
+
+
+@csrf_exempt
+def events_mine(request):
+    """
+    LIFFのIDトークンを検証し、作成者=自分のイベントを返す。
+    1:1の「イベント管理」ページ用。
+    """
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'reason': 'method_not_allowed'}, status=405)
+
+    try:
+        body = json.loads(request.body.decode('utf-8'))
+    except Exception:
+        return JsonResponse({'ok': False, 'reason': 'bad_json'}, status=400)
+
+    id_token = (body.get('id_token') or '').strip()
+    if not id_token:
+        return JsonResponse({'ok': False, 'reason': 'missing_id_token'}, status=400)
+
+    # 1) IDトークン検証 → user_id
+    try:
+        payload = _verify_id_token_internal(id_token)
+        user_id = payload.get('sub') or None
+        if not user_id:
+            return JsonResponse({'ok': False, 'reason': 'invalid_id_token'}, status=401)
+    except Exception:
+        return JsonResponse({'ok': False, 'reason': 'invalid_id_token'}, status=401)
+
+    # 2) 自分が作成したイベント
+    #    ※旧データ救済: created_by が空/NULL & scope_id が自分の userId のものも含める
+    qs = (Event.objects
+        .filter(Q(created_by=user_id) |
+                Q(created_by__isnull=True, scope_id=user_id) |
+                Q(created_by="", scope_id=user_id))
+        .order_by('-start_time')[:200])
+
+
+    def _to_str(dt):
+        return dt.isoformat() if dt else None
+
+    items = [{
+        'id': e.id,
+        'name': e.name,
+        'start_time': _to_str(e.start_time),
+        'start_time_has_clock': e.start_time_has_clock,
+        'end_time': _to_str(e.end_time),
+        'capacity': e.capacity,
+        'scope_id': e.scope_id,
+        'created_by': user_id,
+    } for e in qs]
+
+    return JsonResponse({'ok': True, 'items': items}, status=200)
+
+
 # ===== 以下、Chatbot用 ===== #
 
 def _is_home_menu_trigger(text: str) -> bool:
@@ -159,24 +325,25 @@ def _resolve_scope_id(obj) -> str:  # ev も ev.source も受け取れる
 
 @csrf_exempt
 def callback(request):
-    # get X-Line-Signature header value
     signature = request.META.get('HTTP_X_LINE_SIGNATURE', '')
-    # get request body as text
     body = request.body.decode('utf-8')
-    logger.debug("Request body: %s", body)
 
-    # ★ここは「手動で events を回さない」★
+    types = []
+    try:
+        data = json.loads(body)
+        for ev in data.get("events", []):
+            src = ev.get("source", {})
+            types.append(f'{ev.get("type")}:{src.get("type")}:{src.get("groupId") or src.get("roomId") or src.get("userId")}')
+    except Exception as ex:
+        types.append(f'parse_error:{ex}')
+    logger.info("callback received: sig=%s body_len=%d events=%s", signature[:8], len(body), types)
+
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        logger.error("Invalid signature. Check your channel access token/channel secret.")
-        return HttpResponse(status=400)
-    except Exception as e:
-        logger.error("Error: %s", str(e))
-        return HttpResponseBadRequest()
-
+        logger.warning("callback invalid signature")
+        return HttpResponseForbidden()
     return HttpResponse('OK')
-
 
 
 # =========================
@@ -191,6 +358,26 @@ def liff_entry(request):
     # ngrok/Proxy 配下でも必ず https で返す（LINEは http を拒否する）
     abs_redirect = f"https://{host}{reverse('liff_entry')}"
 
+    # グループから開かれた場合、サジェスト用レジストリに登録する
+    group_id = request.GET.get('groupId') or ""
+    if group_id:
+        try:
+            from .models import KnownGroup
+            obj, _ = KnownGroup.objects.get_or_create(group_id=group_id, defaults={"joined": True})
+            obj.last_seen_at = timezone.now()
+            # 可能なら名前・アイコンを更新（Botがグループに参加している必要あり）
+            try:
+                s = line_bot_api.get_group_summary(group_id)
+                obj.name = getattr(s, "group_name", None) or getattr(s, "groupName", "") or obj.name
+                obj.picture_url = getattr(s, "picture_url", None) or getattr(s, "pictureUrl", "") or obj.picture_url
+                obj.last_summary_at = timezone.now()
+            except Exception:
+                pass
+            obj.save()
+        except Exception:
+            # レジストリ更新に失敗しても画面表示は継続
+            pass
+        
     return render(request, 'events/liff_app.html', {
         'LIFF_ID': getattr(settings, 'LIFF_ID', ''),
         'LIFF_REDIRECT_ABS': abs_redirect,

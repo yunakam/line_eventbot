@@ -90,3 +90,7 @@ input[type="text"], input[type="date"], input[type="time"] {
 /* --- inline errors --- */
 .err { color: #D22; font-size: 12px; line-height: 1.4; }
 .row .err { margin-top: -2px; }
+
+.sg-pill img { width:24px; height:24px; border-radius:50%; }
+.sg-pill .name { font-size:14px; }
+.sg-pill .clear { margin-left:8px; font-size:12px; color:#888; cursor:pointer; }

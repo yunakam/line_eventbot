@@ -1,6 +1,18 @@
 # events/models.py
 from django.db import models
+from django.utils import timezone
 
+class KnownGroup(models.Model):
+    group_id     = models.CharField(max_length=64, unique=True, db_index=True)
+    name         = models.CharField(max_length=255, blank=True, default="")
+    picture_url  = models.TextField(blank=True, default="")
+    joined       = models.BooleanField(default=True)  # 退出検知でFalseにする想定
+    last_seen_at = models.DateTimeField(default=timezone.now)
+    last_summary_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return self.name or self.group_id
+    
 class Event(models.Model):
     name = models.CharField(max_length=200)
     start_time = models.DateTimeField()
@@ -12,7 +24,7 @@ class Event(models.Model):
 
     def __str__(self):
         return self.name
-
+    
 class Participant(models.Model):
     user_id = models.CharField(max_length=50)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="participants")
