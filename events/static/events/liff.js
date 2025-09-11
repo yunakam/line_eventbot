@@ -43,9 +43,6 @@
     $("#create-form").reset();
     hideError("#err-title");
     hideError("#err-date");
-    // 初期状態: endmode=time の行可視・duration非表示に戻す
-    $("#row-endtime").hidden = false;
-    $("#row-duration").hidden = true;
   }
 
   function isoToLocalYmd(iso) {
@@ -72,9 +69,7 @@
     $("#f-start").value = (item.start_time && item.start_time_has_clock) ? isoToLocalHhmm(item.start_time) : "";
 
     // 終了は「時刻入力」タブに寄せておく（duration かどうか判別しづらいため）
-    document.querySelector('input[name="endmode"][value="time"]').checked = true;
-    $("#row-endtime").hidden = false;
-    $("#row-duration").hidden = true;
+    document.querySelector('input[name="endmode"][value="time"]').checked = true; 
     $("#f-end").value = item.end_time ? isoToLocalHhmm(item.end_time) : "";
     $("#f-duration").value = "";
 
@@ -134,8 +129,6 @@
       if (d.endmode) {
         const radio = document.querySelector(`input[name="endmode"][value="${d.endmode}"]`);
         if (radio) radio.checked = true;
-        $("#row-endtime").hidden = (d.endmode !== "time");
-        $("#row-duration").hidden = (d.endmode !== "duration");
       }
       $("#f-end").value = d.end_time || "";
       $("#f-duration").value = d.duration || "";
@@ -603,20 +596,13 @@
       }
     }
 
-    // endmode 切替（終了時刻 or 所要時間）
-    $all('input[name="endmode"]').forEach(radio => {
-      radio.addEventListener("change", () => {
-        const v = $all('input[name="endmode"]').find(r => r.checked)?.value;
-        $("#row-endtime").hidden = (v !== "time");
-        $("#row-duration").hidden = (v !== "duration");
-      });
-    });
-
     $("#btn-create").addEventListener("click", async () => {
       showDialog();    // モーダルを開く
+
       const items = await fetchGroupSuggest("");  // グループ候補を取得
       renderSuggest(items);
     });
+
     $("#btn-cancel").addEventListener("click", () => { hideDialog(); });
     $("#create-backdrop").addEventListener("click", () => { hideDialog(); });
     $("#btn-save").addEventListener("click", () => { handleSave(); });

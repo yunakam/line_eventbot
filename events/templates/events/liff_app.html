@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>イベント管理</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="/static/events/liff.css?v=1">
+  <link rel="stylesheet" href="/static/events/liff.css?v=6">
 </head>
 
 <body>
@@ -29,83 +29,87 @@
       </header>
 
       <form id="create-form" class="dlg-body">
-      <!-- タイトル（必須、エリア右にエラー表示） -->
-      <label class="row">
-        <span>タイトル</span>
-        <input id="f-title" name="title" type="text" placeholder="イベント名を入力してね" required>
-        <small id="err-title" class="err" hidden>イベント名を入力してね</small>
-      </label>
-
-      <!-- 日付（必須） -->
-      <label class="row">
-        <span>日付</span>
-        <input id="f-date" name="date" type="date" required>
-        <small id="err-date" class="err" hidden>日付を選んでね</small>
-      </label>
-
-      <!-- 開始時刻（任意） + 終了入力モード -->
-      <div class="row2">
-        <label>
-          <span>開始時刻</span>
-          <input id="f-start" name="start_time" type="time">
+        <!-- タイトル（必須） -->
+        <label class="row">
+          <span>タイトル</span>
+          <input id="f-title" name="title" type="text" placeholder="イベント名を入力してね" required>
+          <small id="err-title" class="err" hidden>イベント名を入力してね</small>
         </label>
-        <label>
-          <span>終了の入力</span>
-          <div>
-            <label style="margin-right:12px;">
-              <input type="radio" name="endmode" value="time" checked> 終了時刻
-            </label>
-            <label>
-              <input type="radio" name="endmode" value="duration"> 所要時間
-            </label>
+
+        <!-- 日付（必須）/ 開始時刻（任意） -->
+        <div class="row2">
+          <label class="subrow">
+            <span>日付</span>
+            <input id="f-date" name="date" type="date" required>
+            <small id="err-date" class="err" hidden>日付を選んでね</small>
+          </label>
+          <label class="subrow">
+            <span>開始時刻</span>
+            <input id="f-start" name="start_time" type="time">
+          </label>
+        </div>
+
+        <!-- （左）終了時刻/所要時間ラジオ（右）選択された方の入力 -->
+        <div class="row">
+          <fieldset class="endpicker">
+            <!-- 左カラム：ラジオ -->
+            <div class="endmode-switch">
+              <label class="radio-pill">
+                <input type="radio" name="endmode" value="time" checked> 終了時刻
+              </label>
+              <label class="radio-pill">
+                <input type="radio" name="endmode" value="duration"> 所要時間
+              </label>
+            </div>
+
+            <!-- 右カラム：選択された入力欄（:has で片方のみ表示） -->
+            <div class="end-input">
+              <label class="subrow when-time" id="row-endtime">
+                <span>終了時刻</span>
+                <input id="f-end" name="end_time" type="time" placeholder="例: 18:00">
+              </label>
+              <label class="subrow when-duration" id="row-duration">
+                <span>所要時間</span>
+                <input id="f-duration" name="duration" type="text" placeholder="例: 1:30 / 90m / 2h / 120">
+              </label>
+            </div>
+          </fieldset>
+        </div>
+
+        <!-- 定員 -->
+        <label class="row">
+          <span>定員</span>
+          <input id="f-cap" name="capacity" type="number" inputmode="numeric" min="1" step="1" placeholder="数字を入力してね">
+        </label>
+
+
+
+
+        <!-- 共有先グループ -->
+        <label class="row" id="row-group-to-share">
+          <span>共有するグループ</span>
+          <input id="f-group" type="hidden">
+          <div id="selected-group" class="sg-pill" style="display:none;align-items:center;gap:8px;margin:6px 0;"></div>
+          <div id="group-suggest" class="row" style="display:none;"></div>
+          <div id="group-preview" class="sg-preview" style="display:none;">
+            <img id="group-icon" alt="">
+            <span id="group-name" class="truncate"></span>
           </div>
         </label>
-      </div>
 
-      <!-- 終了時刻 -->
-      <label class="row" id="row-endtime">
-        <span>終了時刻</span>
-        <input id="f-end" name="end_time" type="time" placeholder="例: 18:00">
-      </label>
-
-      <!-- 所要時間 -->
-      <label class="row" id="row-duration" hidden>
-        <span>所要時間</span>
-        <input id="f-duration" name="duration" type="text" placeholder="例: 1:30 / 90m / 2h / 120">
-      </label>
-
-      <!-- 定員 -->
-      <label class="row">
-        <span>定員</span>
-        <input id="f-cap" name="capacity" type="number" inputmode="numeric" min="1" step="1" placeholder="数字を入力してね">
-      </label>
-
-      <!-- 共有先グループ -->
-      <label class="row" id="row-group-to-share">
-        <span>共有するグループ</span>
-        <input id="f-group" type="hidden">
-        <div id="selected-group" class="sg-pill" style="display:none;align-items:center;gap:8px;margin:6px 0;"></div>
-        <div id="group-suggest" class="row" style="display:none;"></div>
-        <div id="group-preview" class="row" style="display:none;align-items:center;gap:8px;">
-          <img id="group-icon" alt="" style="width:24px;height:24px;border-radius:50%;">
-          <span id="group-name"></span>
-        </div>
-      </label>
-
-      <!-- 通知 -->
-      <label id="row-notify" class="row" style="display:none;">
-        <span>通知</span>
-        <input id="f-notify" name="notify" type="checkbox" disabled>
-        <small style="margin-left:8px;">イベント作成通知をグループに送る</small>
-      </label>
-    </form>
-
-
+        <!-- 通知 -->
+        <label id="row-notify" class="row" style="display:none;">
+          <span>通知</span>
+          <input id="f-notify" name="notify" type="checkbox" disabled>
+          <small style="margin-left:8px;">イベント作成通知をグループに送る</small>
+        </label>
+      </form>
 
       <footer class="dlg-footer">
         <button type="button" id="btn-cancel" class="btn-secondary">やめる</button>
         <button type="button" id="btn-save" class="btn-primary">保存</button>
       </footer>
+
     </div>
   </section>
 
