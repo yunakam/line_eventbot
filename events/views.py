@@ -578,9 +578,12 @@ def events_list(request):
                     obj[key] = _to_str(getattr(e, key, None))
             if 'name' not in obj and 'title' in obj:
                 obj['name'] = obj.get('title')
-            # ここを追加: 作成者IDを返す（存在すれば）
+            # 作成者IDを返す（一覧で「自分のイベント」UI等に使う）
             if 'created_by' in fields:
                 obj['created_by'] = getattr(e, 'created_by', None)
+            # 共有先ID(scope_id)も返す（編集モーダル復元やUI安定化のため）
+            if 'scope_id' in fields:
+                obj['scope_id'] = getattr(e, 'scope_id', None)
             items.append(obj)
 
         return JsonResponse({'ok': True, 'items': items}, status=200)

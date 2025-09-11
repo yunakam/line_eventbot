@@ -26,7 +26,7 @@
     $("#create-backdrop").hidden = false;
     $("#create-dialog").hidden = false;
     // タイトル文言を切り替え
-    const title = (mode === "edit") ? "イベント編集" : "イベント作成";
+    const title = (mode === "edit") ? "イベントを編集" : "イベントを作成";
     $("#dlg-title").textContent = title;
     $("#f-title").focus();
   }
@@ -59,7 +59,9 @@
     return `${hh}:${mm}`;
   }
 
-  function openEditDialog(id) {
+
+  // 編集モーダル
+  async function openEditDialog(id) {
     const item = (gItems || []).find(x => Number(x.id) === Number(id));
     if (!item) return;
 
@@ -68,17 +70,34 @@
     $("#f-date").value  = item.start_time ? isoToLocalYmd(item.start_time) : "";
     $("#f-start").value = (item.start_time && item.start_time_has_clock) ? isoToLocalHhmm(item.start_time) : "";
 
-    // 終了は「時刻入力」タブに寄せておく（duration かどうか判別しづらいため）
-    document.querySelector('input[name="endmode"][value="time"]').checked = true; 
+    // 終了は「時刻入力」タブに寄せておく
+    document.querySelector('input[name="endmode"][value="time"]').checked = true;
     $("#f-end").value = item.end_time ? isoToLocalHhmm(item.end_time) : "";
     $("#f-duration").value = "";
 
     $("#f-cap").value = (item.capacity == null ? "" : String(item.capacity));
 
+    // 共有済みグループのプレビュー復元
+    const gid = (item.scope_id || "").trim();
+    const input = $("#f-group");
+    if (input) input.value = gid;
+
+    if (gid && /^[CR][0-9a-f]{32}$/i.test(gid)) {
+      // サーバ側で validate → 名前・アイコンをプレビュー表示
+      try { await validateGroupSelection({ silent: true }); } catch {}
+    } else {
+      // 共有なしならプレビュー/通知UIを隠す
+      const gp = $("#group-preview"), rn = $("#row-notify"), fn = $("#f-notify");
+      if (gp) gp.style.display = "none";
+      if (rn) rn.style.display = "none";
+      if (fn) { fn.checked = false; fn.disabled = true; }
+    }
+
     isEditing = true;
     editingId = id;
-    showDialog("edit");  // タイトル差し替え
+    showDialog("edit");
   }
+
 
   async function confirmDelete(id, name) {
     if (!window.confirm(`「${name || '（無題）'}」を削除する？`)) return;
@@ -635,6 +654,14 @@
       notify = notifyChecked;
     }
 
+    // 3) （編集時）共有先UIを触っていない場合は、元の共有先(scope_id)を維持する
+    if (isEditing && !(urlHasGroup || inputGroup || notifyChecked)) {
+      const original = (gItems || []).find(x => Number(x.id) === Number(editingId));
+      if (original && original.scope_id) {
+        chosenScopeId = original.scope_id;
+      }
+    }
+
     const payload = {
       id_token: token,
       name, date,
@@ -847,7 +874,7 @@
 
       try {
         if (act === "edit") {
-          openEditDialog(id);
+          await openEditDialog(id);
           return;
         }
         if (act === "delete") {
@@ -887,7 +914,7 @@
               ? `${data.counts.capacity}名`
               : "定員なし";
 
-            // アイコンの下に名前だけを表示（縦並び・中央寄せ）
+            // アイコンの下に名前を表示
             const listHtml = (arr) => (
               arr && arr.length
                 ? `<ul class="att-grid">${
