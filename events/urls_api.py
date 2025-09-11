@@ -9,5 +9,7 @@ urlpatterns = [
     path('events/mine', views.events_mine, name='events_mine'),
     path('groups/validate', views.group_validate, name='group_validate'),
     path('groups/suggest', views.groups_suggest, name='groups_suggest'),
+    path('events/<int:event_id>/rsvp', views.event_rsvp, name='event_rsvp'),
+    path('events/rsvp-status', views.rsvp_status, name='rsvp_status'),
 ]
 

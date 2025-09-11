@@ -387,6 +387,54 @@
       return data;
     },
 
+    async joinEvent(id) {
+      const token = await ensureFreshIdToken();
+      if (!token) throw new Error("id_token missing");
+      const res = await fetch(`/api/events/${id}/rsvp`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ id_token: token }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        const r = data.reason ? (typeof data.reason === "string" ? data.reason : JSON.stringify(data.reason)) : `HTTP ${res.status}`;
+        throw new Error(r);
+      }
+      return data; // {status: 'joined'|'waiting'|'already', ...}
+    },
+
+    async cancelRsvp(id) {
+      const token = await ensureFreshIdToken();
+      if (!token) throw new Error("id_token missing");
+      const res = await fetch(`/api/events/${id}/rsvp`, {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ id_token: token }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        const r = data.reason ? (typeof data.reason === "string" ? data.reason : JSON.stringify(data.reason)) : `HTTP ${res.status}`;
+        throw new Error(r);
+      }
+      return data; // {status: 'canceled', ...}
+    },
+
+    async fetchRsvpStatus(ids) {
+      const token = await ensureFreshIdToken();
+      if (!token) throw new Error("id_token missing");
+      const res = await fetch(`/api/events/rsvp-status`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ id_token: token, ids }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) return {};
+      return data.statuses || {};
+    },    
+
   };
 
 
@@ -408,29 +456,50 @@
       }
 
       gItems = items;  // ← 一覧をキャッシュ
+
+      // 追加: 自分の参加ステータスをまとめて取得（失敗時は空）
+      let statuses = {};
+      try {
+        const ids = items.map(x => x.id);
+        statuses = await api.fetchRsvpStatus(ids);
+      } catch { statuses = {}; }
+
       listEl.innerHTML = items.map((e) => {
         const name = e.name || "（無題）";
-
-        // 追加：開始〜終了の1行レンジを生成
         const range = buildLocalRange(e.start_time, !!e.start_time_has_clock, e.end_time);
-
         const cap = (e.capacity === null || e.capacity === undefined)
           ? "定員なし"
           : `定員: ${e.capacity}`;
-
         const isAuthor = !!e.created_by && !!currentUserId && (e.created_by === currentUserId);
+
+        // 追加: 参加状態の判定
+        const st = statuses[String(e.id)] || { joined: false, is_waiting: false };
+        const joined = !!st.joined;
+        const waiting = !!st.is_waiting;
+
+        // 参加/キャンセルボタン
+        const rsvpButtons = joined
+          ? `<button class="btn-outline" data-act="rsvp-cancel" data-id="${e.id}">キャンセル</button>`
+          : `<button class="btn-primary" data-act="rsvp-join" data-id="${e.id}">参加</button>`;
+
+        // 作者には従来どおり編集/削除、非作者には参加系ボタン
+        const actionsHtml = isAuthor
+          ? `<div class="actions">
+              <button class="btn-outline" data-act="edit" data-id="${e.id}">編集</button>
+              <button class="btn-outline dangerous" data-act="delete" data-id="${e.id}" data-name="${escapeHtml(name)}">削除</button>
+            </div>`
+          : `<div class="actions">${rsvpButtons}</div>`;
+
+        // 待機中なら行内に小注記（任意）
+        const waitingNote = (joined && waiting) ? `<p class="muted">※ウェイトリスト登録中</p>` : ``;
 
         return `
           <article class="card" data-id="${e.id}">
             <h3>${escapeHtml(name)}</h3>
             <p>${escapeHtml(range)}</p>
             <p>${escapeHtml(cap)}</p>
-            ${isAuthor ? `
-              <div class="actions">
-                <button class="btn-outline" data-act="edit" data-id="${e.id}">編集</button>
-                <button class="btn-outline dangerous" data-act="delete" data-id="${e.id}" data-name="${escapeHtml(name)}">削除</button>
-              </div>
-            ` : ``}
+            ${waitingNote}
+            ${actionsHtml}
           </article>
         `;
       }).join("");
@@ -742,17 +811,44 @@
     }
 
 
-    $("#event-list").addEventListener("click", (ev) => {
+    $("#event-list").addEventListener("click", async (ev) => {
       const btn = ev.target.closest("button[data-act]");
       if (!btn) return;
       const act = btn.dataset.act;
       const id  = Number(btn.dataset.id);
-      if (act === "edit") {
-        openEditDialog(id);
-      } else if (act === "delete") {
-        confirmDelete(id, btn.dataset.name || "");
+
+      try {
+        if (act === "edit") {
+          openEditDialog(id);
+          return;
+        }
+        if (act === "delete") {
+          confirmDelete(id, btn.dataset.name || "");
+          return;
+        }
+        if (act === "rsvp-join") {
+          const res = await api.joinEvent(id);
+          if (res.status === "waiting") alert("ウェイトリストに登録したよ");
+          else if (res.status === "already") alert("もう参加登録しているよ");
+          else alert("参加登録したよ");
+          await loadAndRender(); // 最新状態に更新
+          return;
+        }
+        if (act === "rsvp-cancel") {
+          const res = await api.cancelRsvp(id);
+          alert("キャンセルしたよ");
+          await loadAndRender();
+          return;
+        }
+      } catch (err) {
+        const msg = String(err && err.message || err || "");
+        if (/IdToken expired/i.test(msg) || /invalid[_ ]?token/i.test(msg)) {
+          if (forceReloginOnce(false)) return;
+        }
+        alert(`操作に失敗したよ: ${msg}`);
       }
     });
+
 
   });
 

@@ -24,7 +24,7 @@ from linebot.exceptions import InvalidSignatureError
 
 from . import ui, utils
 from . import policies
-from .models import KnownGroup, Event, EventDraft, EventEditDraft
+from .models import KnownGroup, Event, Participant, EventDraft, EventEditDraft
 from .utils import build_liff_url_for_source, build_liff_deeplink_for_source
 from .handlers import create_wizard as cw, edit_wizard as ew, commands as cmd
 
@@ -784,6 +784,124 @@ def event_detail(request, event_id: int):
             'created_by': getattr(e, 'created_by', None),
         }
     }, status=200)
+
+
+
+@csrf_exempt
+def event_rsvp(request, event_id: int):
+    """
+    POST   : 参加する（満員ならウェイトリストに登録）
+    DELETE : 参加をキャンセル（繰り上げがあれば昇格）
+    必須: body.id_token
+    応答例: { ok: True, status: "joined"|"waiting"|"already"|"canceled"|"not_joined",
+             is_waiting: bool, confirmed_count: int, capacity: int|null, promoted_user_id: str|null }
+    """
+    # イベント存在チェック
+    try:
+        e = Event.objects.get(id=event_id)
+    except Event.DoesNotExist:
+        return JsonResponse({'ok': False, 'reason': 'not found'}, status=404)
+
+    # JSON読取（DELETEでもbodyを受理）
+    try:
+        body = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except Exception:
+        return HttpResponseBadRequest('invalid json')
+
+    id_token = (body.get('id_token') or "").strip()
+    if not id_token:
+        return JsonResponse({'ok': False, 'reason': 'id_token required'}, status=401)
+
+    # IDトークン検証 → user_id
+    try:
+        payload = _verify_id_token_internal(id_token)
+        user_id = payload.get('sub') or None
+        if not user_id:
+            return JsonResponse({'ok': False, 'reason': 'invalid_id_token'}, status=401)
+    except Exception:
+        return JsonResponse({'ok': False, 'reason': 'invalid_id_token'}, status=401)
+
+    # POST: 参加
+    if request.method == 'POST':
+        # 既に参加済みか
+        existed = Participant.objects.filter(user_id=user_id, event=e).first()
+        if existed:
+            return JsonResponse({
+                'ok': True, 'status': 'already',
+                'is_waiting': existed.is_waiting,
+                'confirmed_count': e.participants.filter(is_waiting=False).count(),
+                'capacity': e.capacity,
+            }, status=200)
+
+        confirmed_count = e.participants.filter(is_waiting=False).count()
+        waiting = (e.capacity is not None) and (confirmed_count >= e.capacity)
+
+        Participant.objects.create(user_id=user_id, event=e, is_waiting=waiting)
+        return JsonResponse({
+            'ok': True,
+            'status': 'waiting' if waiting else 'joined',
+            'is_waiting': waiting,
+            'confirmed_count': e.participants.filter(is_waiting=False).count(),
+            'capacity': e.capacity,
+        }, status=200)
+
+    # DELETE: キャンセル
+    if request.method == 'DELETE':
+        p = Participant.objects.filter(user_id=user_id, event=e).first()
+        if not p:
+            return JsonResponse({'ok': True, 'status': 'not_joined'}, status=200)
+
+        p.delete()
+
+        # 繰り上げ（先着のウェイトリストを昇格）
+        promoted_user_id = None
+        if e.capacity is not None:
+            w = Participant.objects.filter(event=e, is_waiting=True).order_by('joined_at').first()
+            if w:
+                w.is_waiting = False
+                w.save(update_fields=['is_waiting'])
+                promoted_user_id = w.user_id
+                # TODO: ここで主催者/昇格者への通知を送る（将来実装）
+
+        return JsonResponse({'ok': True, 'status': 'canceled', 'promoted_user_id': promoted_user_id}, status=200)
+
+    return JsonResponse({'ok': False, 'reason': 'method_not_allowed'}, status=405)
+
+
+@csrf_exempt
+def rsvp_status(request):
+    """
+    POST: { id_token: "...", ids: [1,2,3,...] }
+    応答: { ok: True, statuses: { "<id>": {"joined": bool, "is_waiting": bool} } }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'reason': 'method_not_allowed'}, status=405)
+
+    try:
+        body = json.loads(request.body.decode('utf-8'))
+    except Exception:
+        return JsonResponse({'ok': False, 'reason': 'bad_json'}, status=400)
+
+    id_token = (body.get('id_token') or "").strip()
+    ids = body.get('ids') or []
+    if not id_token or not isinstance(ids, list) or not ids:
+        return JsonResponse({'ok': False, 'reason': 'missing_params'}, status=400)
+
+    try:
+        payload = _verify_id_token_internal(id_token)
+        user_id = payload.get('sub') or None
+        if not user_id:
+            return JsonResponse({'ok': False, 'reason': 'invalid_id_token'}, status=401)
+    except Exception:
+        return JsonResponse({'ok': False, 'reason': 'invalid_id_token'}, status=401)
+
+    rows = Participant.objects.filter(user_id=user_id, event_id__in=ids)
+    mp = {str(r.event_id): {'joined': True, 'is_waiting': r.is_waiting} for r in rows}
+    # 未参加イベントは joined=False を返す
+    for i in ids:
+        mp.setdefault(str(i), {'joined': False, 'is_waiting': False})
+
+    return JsonResponse({'ok': True, 'statuses': mp}, status=200)
 
 
 @csrf_exempt
