@@ -327,23 +327,25 @@ def _resolve_scope_id(obj) -> str:  # ev も ev.source も受け取れる
 def callback(request):
     signature = request.META.get('HTTP_X_LINE_SIGNATURE', '')
     body = request.body.decode('utf-8')
+    logger.debug("Request body: %s", body)
 
-    types = []
-    try:
-        data = json.loads(body)
-        for ev in data.get("events", []):
-            src = ev.get("source", {})
-            types.append(f'{ev.get("type")}:{src.get("type")}:{src.get("groupId") or src.get("roomId") or src.get("userId")}')
-    except Exception as ex:
-        types.append(f'parse_error:{ex}')
-    logger.info("callback received: sig=%s body_len=%d events=%s", signature[:8], len(body), types)
+    # 追加: 受信したリクエストの Host を保持（ngrok でもOK）
+    utils.set_request_host(request.get_host())
 
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        logger.warning("callback invalid signature")
-        return HttpResponseForbidden()
+        logger.error("Invalid signature. Check your channel access token/channel secret.")
+        return HttpResponse(status=400)
+    except Exception as e:
+        logger.error("Error: %s", str(e))
+        return HttpResponseBadRequest()
+    finally:
+        # 念のためクリア（同一プロセス内の他リクエストへの漏れ防止）
+        utils.set_request_host(None)
+
     return HttpResponse('OK')
+
 
 
 # =========================
@@ -583,8 +585,12 @@ def events_list(request):
     notify = bool(body.get('notify', False))
     if notify and scope_id:
         try:
-            # このグループのイベント一覧に遷移するLIFF URLを生成
-            liff_url = utils.build_liff_url_for_source(source_type="group", group_id=scope_id)
+            # リクエストHostを一時的に設定して、動的に絶対URLを生成
+            utils.set_request_host(request.get_host())
+            try:
+                liff_url = utils.build_liff_url_for_source(source_type="group", group_id=scope_id)
+            finally:
+                utils.set_request_host(None)
 
             flex_contents = {
                 "type": "bubble",

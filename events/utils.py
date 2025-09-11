@@ -1,8 +1,7 @@
 # events/utils.py
 # 役割: UIに依存しない純ロジック（パース、日時合成、params→日付抽出）を集約する。
 
-import re
-import os
+import re, os, threading
 from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone as dt_timezone
 from django.utils import timezone
@@ -47,13 +46,22 @@ def get_liff_endpoint() -> str:
         raise RuntimeError(f"{key} is not set in environment")
     return val.rstrip("/")
 
+
 def build_liff_url_for_source(source_type: str, group_id: str | None = None, user_id: str | None = None) -> str:
     """
     受信メッセージの送信元に応じて LIFF URL を組み立てる。
-    - グループ: {LIFF_ENDPOINT}/?src=group&groupId=...
-    - 1:1     : {LIFF_ENDPOINT}/?src=user&userId=...
+    - グループ: https://{current-host}/liff/?src=group&groupId=...
+    - 1:1     : https://{current-host}/liff/?src=user&userId=...
+    既存の .env ベースURLがある場合でも、現在処理中リクエストの Host が取れればそれを優先する。
     """
-    base = get_liff_endpoint()
+    # 1) 現在のリクエストでHostが設定されていればそれを使う（https固定）
+    host = get_request_host()
+    if host:
+        base = f"https://{host}/liff"
+    else:
+        # 2) なければ従来通り .env のベースURLを使う
+        base = get_liff_endpoint()
+
     params = {}
     if source_type == "group" and group_id:
         params = {"src": "group", "groupId": group_id}
@@ -61,7 +69,20 @@ def build_liff_url_for_source(source_type: str, group_id: str | None = None, use
         params = {"src": "user", "userId": user_id}
     else:
         params = {"src": "unknown"}
-    return f"{base}?{urlencode(params)}"
+
+    return f"{base.rstrip('/')}?{urlencode(params)}"
+
+
+
+_thread_locals = threading.local()
+
+def set_request_host(host: str | None):
+    """現在処理中リクエストの Host を保存/上書きする（Noneでクリア）"""
+    _thread_locals.host = (host or "").strip() if host else ""
+
+def get_request_host() -> str:
+    """保存されている Host を取得（未設定なら空文字）"""
+    return getattr(_thread_locals, "host", "")
 
 
 # ===== 以下、Chatbot用 ===== #
