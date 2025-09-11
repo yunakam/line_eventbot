@@ -3,14 +3,14 @@ from enum import Enum
 from typing import Optional
 
 class EditPolicy(str, Enum):
-    AUTHOR_ONLY = "author_only"
+    CREATOR_ONLY = "creator_only"
     MEMBERS = "members"
 
 def get_scope_edit_policy(scope_id: Optional[str]) -> EditPolicy:
     """
     当面は固定値。将来はDB（GroupPolicy）や設定値から取得する想定。
     """
-    return EditPolicy.AUTHOR_ONLY
+    return EditPolicy.CREATOR_ONLY
 
 def can_edit_event(user_id: str, event) -> bool:
     """

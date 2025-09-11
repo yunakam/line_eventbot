@@ -262,6 +262,107 @@ def events_mine(request):
     return JsonResponse({'ok': True, 'items': items}, status=200)
 
 
+@csrf_exempt
+def event_participants(request, event_id: int):
+    """
+    作成者だけが見られる参加者/ウェイトリスト一覧 API。
+    POST JSON: { "id_token": "<LIFFのIDトークン>" }
+    戻り: {
+      ok,
+      event:{id,name,capacity},
+      participants:[{user_id, joined_at, name?, pictureUrl?}],
+      waitlist:[{...}],
+      counts:{participants, waitlist, capacity}
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'reason': 'method_not_allowed'}, status=405)
+
+    # 受信JSON
+    try:
+        body = json.loads(request.body.decode('utf-8'))
+    except Exception:
+        return JsonResponse({'ok': False, 'reason': 'bad_json'}, status=400)
+
+    id_token = (body.get('id_token') or '').strip()
+    if not id_token:
+        return JsonResponse({'ok': False, 'reason': 'missing_id_token'}, status=400)
+
+    # トークン検証 → user_id
+    try:
+        payload = _verify_id_token_internal(id_token)
+        user_id = payload.get('sub') or None
+        if not user_id:
+            return JsonResponse({'ok': False, 'reason': 'invalid_id_token'}, status=401)
+    except Exception:
+        return JsonResponse({'ok': False, 'reason': 'invalid_id_token'}, status=401)
+
+    # 対象イベント取得
+    try:
+        e = Event.objects.get(pk=event_id)
+    except Event.DoesNotExist:
+        return JsonResponse({'ok': False, 'reason': 'not_found'}, status=404)
+
+    # 作成者だけ許可（旧データ救済あり）
+    is_creator = (
+        (getattr(e, 'created_by', None) == user_id) or
+        (not getattr(e, 'created_by', None) and getattr(e, 'scope_id', None) == user_id)
+    )
+    if not is_creator:
+        return JsonResponse({'ok': False, 'reason': 'forbidden'}, status=403)
+
+    # 参加者・ウェイトリスト（参加日時昇順）
+    qs = e.participants.all().order_by('joined_at', 'id')
+    base_participants = [{'user_id': p.user_id, 'joined_at': p.joined_at.isoformat()} for p in qs if not p.is_waiting]
+    base_waitlist    = [{'user_id': p.user_id, 'joined_at': p.joined_at.isoformat()} for p in qs if p.is_waiting]
+
+    # --- プロフィール付与（グループ/ルームのみ） ---
+    profiles = {}
+    scope_id = getattr(e, 'scope_id', '') or ''
+    if scope_id and (scope_id.startswith('C') or scope_id.startswith('R')):  # C=Group, R=Room
+        try:
+            line_bot_api, _ = get_line_clients()  # 既存ヘルパで LineBotApi を得る :contentReference[oaicite:1]{index=1}
+        except Exception:
+            line_bot_api = None
+
+        if line_bot_api:
+            uids = {r['user_id'] for r in (base_participants + base_waitlist)}
+            for uid in uids:
+                try:
+                    if scope_id.startswith('C'):
+                        prof = line_bot_api.get_group_member_profile(scope_id, uid)
+                    else:
+                        prof = line_bot_api.get_room_member_profile(scope_id, uid)
+                    name = getattr(prof, 'display_name', None) or getattr(prof, 'displayName', None) or ''
+                    pic  = getattr(prof, 'picture_url', None)  or getattr(prof, 'pictureUrl', None)  or ''
+                    profiles[uid] = {'name': name, 'pictureUrl': pic}
+                except Exception:
+                    # 取得失敗時は黙って素通し（IDのみの表示にフォールバック）
+                    pass
+
+    def enrich(rows):
+        out = []
+        for r in rows:
+            prof = profiles.get(r['user_id'], {})
+            out.append({
+                **r,
+                'name': prof.get('name', ''),
+                'pictureUrl': prof.get('pictureUrl', ''),
+            })
+        return out
+
+    participants = enrich(base_participants)
+    waitlist     = enrich(base_waitlist)
+
+    return JsonResponse({
+        'ok': True,
+        'event': {'id': e.id, 'name': e.name, 'capacity': e.capacity},
+        'participants': participants,
+        'waitlist': waitlist,
+        'counts': {'participants': len(participants), 'waitlist': len(waitlist), 'capacity': e.capacity},
+    }, status=200)
+
+
 # ===== 以下、Chatbot用 ===== #
 
 def _is_home_menu_trigger(text: str) -> bool:

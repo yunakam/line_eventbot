@@ -389,7 +389,11 @@
 
     async joinEvent(id) {
       const token = await ensureFreshIdToken();
-      if (!token) throw new Error("id_token missing");
+      if (!token) {
+        // トークンが無ければこの場で再ログインを促す（クリック側のcatchでも拾えるが二重保険）
+        forceReloginOnce(false);
+        throw new Error("id_token missing");
+      }
       const res = await fetch(`/api/events/${id}/rsvp`, {
         method: "POST",
         credentials: "same-origin",
@@ -437,6 +441,26 @@
 
   };
 
+  // 参加者一覧の取得
+  async function fetchParticipants(eventId) {
+    const token = await ensureFreshIdToken();
+    if (!token) { if (forceReloginOnce(false)) return null; return null; }
+
+    const res = await fetch(`/api/events/${eventId}/participants`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ id_token: token })
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      const msg = (data && (data.reason || data.message)) || `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+    return data;
+  }
+
 
   // ---- 一覧描画 ----
   async function loadAndRender() {
@@ -470,7 +494,7 @@
         const cap = (e.capacity === null || e.capacity === undefined)
           ? "定員なし"
           : `定員: ${e.capacity}`;
-        const isAuthor = !!e.created_by && !!currentUserId && (e.created_by === currentUserId);
+        const isCreator = !!e.created_by && !!currentUserId && (e.created_by === currentUserId);
 
         // 追加: 参加状態の判定
         const st = statuses[String(e.id)] || { joined: false, is_waiting: false };
@@ -482,11 +506,15 @@
           ? `<button class="btn-outline" data-act="rsvp-cancel" data-id="${e.id}">キャンセル</button>`
           : `<button class="btn-primary" data-act="rsvp-join" data-id="${e.id}">参加</button>`;
 
-        // 作者には従来どおり編集/削除、非作者には参加系ボタン
-        const actionsHtml = isAuthor
+        // イベント作成者には「参加者」ボタン＋展開ボックスを追加
+        const actionsHtml = isCreator
           ? `<div class="actions">
+              <button class="btn-secondary" data-act="members" data-id="${e.id}">参加者</button>
               <button class="btn-outline" data-act="edit" data-id="${e.id}">編集</button>
               <button class="btn-outline dangerous" data-act="delete" data-id="${e.id}" data-name="${escapeHtml(name)}">削除</button>
+            </div>
+            <div class="att-box" id="att-${e.id}" hidden>
+              <p class="muted">読み込み中だよ...</p>
             </div>`
           : `<div class="actions">${rsvpButtons}</div>`;
 
@@ -840,13 +868,78 @@
           await loadAndRender();
           return;
         }
+
+        // 参加者表示トグル
+        if (act === "members") {
+          const box = document.getElementById(`att-${id}`);
+          if (!box) return;
+
+          // トグル表示（開いていれば閉じる）
+          if (!box.hidden) { box.hidden = true; return; }
+
+          box.hidden = false;
+          box.innerHTML = `<p class="muted">読み込み中だよ...</p>`;
+          try {
+            const data = await fetchParticipants(id);
+            if (!data) return;
+
+            const capLabel = (data.counts && data.counts.capacity != null)
+              ? `${data.counts.capacity}名`
+              : "定員なし";
+
+            // アイコンの下に名前だけを表示（縦並び・中央寄せ）
+            const listHtml = (arr) => (
+              arr && arr.length
+                ? `<ul class="att-grid">${
+                    arr.map(a => {
+                      const pic  = String(a.pictureUrl || "").replace(/"/g, "&quot;");
+                      const name = (a.name && a.name.trim()) ? a.name : a.user_id;
+                      return `
+                        <li class="att-cell">
+                          ${pic
+                            ? `<img class="att-avatar" src="${pic}" alt="">`
+                            : `<span class="att-avatar placeholder" aria-hidden="true"></span>`}
+                          <div class="att-name">${escapeHtml(name)}</div>
+                        </li>`;
+                    }).join("")}
+                  </ul>`
+                : `<p class="muted">まだいません</p>`
+            );
+
+
+
+            box.innerHTML = `
+              <div class="att-sec">
+                <h4>参加者 (${data.participants.length}/${capLabel})</h4>
+                ${listHtml(data.participants)}
+              </div>
+              <div class="att-sec" style="margin-top:8px;">
+                <h4>ウェイトリスト (${data.waitlist.length})</h4>
+                ${listHtml(data.waitlist)}
+              </div>
+            `;
+          } catch (err) {
+            const msg = String(err && err.message || err || "");
+            box.innerHTML = `<p class="error">読み込みに失敗したよ: ${msg}</p>`;
+          }
+          return;
+        }
+
       } catch (err) {
         const msg = String(err && err.message || err || "");
-        if (/IdToken expired/i.test(msg) || /invalid[_ ]?token/i.test(msg)) {
+
+        if (
+          /IdToken expired/i.test(msg) ||
+          /invalid[_ ]?token/i.test(msg) ||
+          /id[_ ]?token\s*missing/i.test(msg) ||
+          /no\s+id[_ ]?token/i.test(msg)
+        ) {
           if (forceReloginOnce(false)) return;
         }
+
         alert(`操作に失敗したよ: ${msg}`);
       }
+
     });
 
 
