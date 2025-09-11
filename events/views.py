@@ -25,7 +25,7 @@ from linebot.exceptions import InvalidSignatureError
 from . import ui, utils
 from . import policies
 from .models import KnownGroup, Event, EventDraft, EventEditDraft
-from .utils import build_liff_url_for_source
+from .utils import build_liff_url_for_source, build_liff_deeplink_for_source
 from .handlers import create_wizard as cw, edit_wizard as ew, commands as cmd
 
 import logging
@@ -579,13 +579,12 @@ def events_list(request):
         scope_id=scope_id,
     )
 
+
     # 3-2) イベント作成をグループに通知
-    # - フロントから notify: true が来ており
-    # - scope_id（共有先）が指定されている場合のみ、対象グループにpushする
     notify = bool(body.get('notify', False))
     if notify and scope_id:
         try:
-            # リクエストHostを一時的に設定して、動的に絶対URLを生成
+            # 現在ホストからのHTTPS絶対URLを生成
             utils.set_request_host(request.get_host())
             try:
                 liff_url = utils.build_liff_url_for_source(source_type="group", group_id=scope_id)
@@ -598,39 +597,27 @@ def events_list(request):
                     "type": "box",
                     "layout": "vertical",
                     "contents": [
-                        {
-                            "type": "text",
-                            "text": f"「{e.name}」が作成されました！",
-                            "wrap": True,
-                            "weight": "bold",
-                            "size": "md"
-                        },
-                        {
-                            "type": "text",
-                            "text": "グループのイベントを見る",
-                            "wrap": True,
-                            "size": "sm",
-                            "margin": "md",
-                            "color": "#1E90FF",  # 青
-                            "action": {
-                                "type": "uri",
-                                "label": "ここ",
-                                "uri": liff_url
-                            }
-                        },
+                        { "type": "text",
+                        "text": f"「{e.name}」が作成されました！",
+                        "wrap": True, "weight": "bold", "size": "md" },
+                        { "type": "text",
+                        "text": "グループのイベントはここから見れるよ",
+                        "size": "sm", "color": "#0000FF",
+                        "action": { "type": "uri", "label": "ここ", "uri": liff_url } }
                     ]
                 }
             }
+
             msg = FlexSendMessage(
                 alt_text=f"「{e.name}」が作成されました！グループのイベントは {liff_url} から見れるよ",
                 contents=flex_contents
             )
-            
-            # 現時点では単一グループ共有前提のため scope_id へそのままpush
             line_bot_api.push_message(scope_id, msg)
-            
+
         except Exception as ex:
             logger.warning("notify push failed: %s", ex)
+
+
 
 
     # 4) レスポンス（一覧APIと近い形で返す）

@@ -73,6 +73,21 @@ def build_liff_url_for_source(source_type: str, group_id: str | None = None, use
     return f"{base.rstrip('/')}?{urlencode(params)}"
 
 
+def build_liff_deeplink_for_source(source_type: str, group_id: str | None = None, user_id: str | None = None) -> str:
+    """
+    line://app/{LIFF_ID}?... 形式のディープリンクを返す。
+    - グループ: line://app/{LIFF_ID}?src=group&groupId=...
+    - 1:1     : line://app/{LIFF_ID}?src=user&userId=...
+    """
+    base = f"line://app/{get_liff_id()}"
+    if source_type == "group" and group_id:
+        qs = {"src": "group", "groupId": group_id}
+    elif source_type == "user" and user_id:
+        qs = {"src": "user", "userId": user_id}
+    else:
+        qs = {"src": "unknown"}
+    return f"{base}?{urlencode(qs)}"
+
 
 _thread_locals = threading.local()
 
