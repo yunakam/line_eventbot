@@ -130,6 +130,62 @@ def _verify_id_token_internal(id_token: str) -> dict:
         raise ValueError('verify failed')
     return data
 
+def _build_event_created_flex(e, liff_url: str, *, action: str = "created") -> dict:
+    """
+    作成/編集保存時にグループへ送るFlexの本体を作る。
+    action: "created"（作成）|"updated"（更新）
+    """
+    if action == "updated":
+        head_text = f"「{e.name}」が更新されました！"
+    else:
+        head_text = f"「{e.name}」が作成されました！"
+        
+    return {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": head_text,
+                    "wrap": True, "weight": "bold", "size": "md"
+                },
+                {
+                    "type": "text",
+                    "text": "グループのイベントはここから見れるよ",
+                    "size": "sm", "color": "#1A73E8",
+                    "action": {"type": "uri", "label": "ここ", "uri": liff_url}
+                }
+            ]
+        }
+    }
+
+def _push_event_created(scope_id: str, e, *, request_host: str, action: str = "created") -> None:
+    """
+    イベント作成/更新通知Flexを該当グループへpushする。
+    - action: "created"（作成）|"updated"（更新）
+    - request_host は LIFF URL 生成に必要（ngrok等の動的ホスト対応）
+    """
+    if not scope_id:
+        return
+
+    utils.set_request_host(request_host)
+    try:
+        liff_url = utils.build_liff_url_for_source(source_type="group", group_id=scope_id)
+    finally:
+        utils.set_request_host(None)
+
+    contents = _build_event_created_flex(e, liff_url, action=action)
+
+    if action == "updated":
+        alt_text = f"「{e.name}」が更新されました！グループのイベントは {liff_url} から見れるよ"
+    else:
+        alt_text = f"「{e.name}」が作成されました！グループのイベントは {liff_url} から見れるよ"
+
+    msg = FlexSendMessage(alt_text=alt_text, contents=contents)
+    line_bot_api.push_message(scope_id, msg)
+
 
 # =========================
 # Webhook（LINEプラットフォーム）
@@ -171,6 +227,32 @@ def handle_text_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="グループのトークで呼び出してね"))
         return
 
+    norm = unicodedata.normalize("NFKC", text).strip()
+    if norm == "イベントボット":
+        if getattr(source, "type", "") == "group":
+            gid = getattr(source, "group_id", "")
+            liff_url = build_liff_url_for_source(source_type="group", group_id=gid)
+            flex_contents = {
+                "type": "bubble",
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {"type": "text", "text": "グループのイベント一覧", "wrap": True, "weight": "bold", "size": "md"},
+                        {"type": "text", "text": "グループのイベントはここから見れるよ", "size": "sm", "color": "#1A73E8",
+                         "action": {"type": "uri", "label": "ここ", "uri": liff_url}}
+                    ]
+                }
+            }
+            msg = FlexSendMessage(
+                alt_text=f"このグループのイベント一覧。グループのイベントは {liff_url} から見れるよ",
+                contents=flex_contents
+            )
+            line_bot_api.reply_message(event.reply_token, msg)
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="グループのトークで送信してね"))
+        return
+    
     if text in ("イベント", "event", "ｲﾍﾞﾝﾄ"):
         if source.type == "group":
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="イベントはボットとの1:1チャットで作れるよ"))
@@ -487,28 +569,7 @@ def events_list(request):
     notify = bool(body.get('notify', False))
     if notify and scope_id:
         try:
-            utils.set_request_host(request.get_host())
-            try:
-                liff_url = utils.build_liff_url_for_source(source_type="group", group_id=scope_id)
-            finally:
-                utils.set_request_host(None)
-            flex_contents = {
-                "type": "bubble",
-                "body": {
-                    "type": "box",
-                    "layout": "vertical",
-                    "contents": [
-                        {"type": "text", "text": f"「{e.name}」が作成されました！", "wrap": True, "weight": "bold", "size": "md"},
-                        {"type": "text", "text": "グループのイベントはここから見れるよ", "size": "sm", "color": "#0000FF",
-                         "action": {"type": "uri", "label": "ここ", "uri": liff_url}}
-                    ]
-                }
-            }
-            msg = FlexSendMessage(
-                alt_text=f"「{e.name}」が作成されました！グループのイベントは {liff_url} から見れるよ",
-                contents=flex_contents
-            )
-            line_bot_api.push_message(scope_id, msg)
+            _push_event_created(scope_id, e, request_host=request.get_host())
         except Exception as ex:
             logger.warning("notify push failed: %s", ex)
 
@@ -521,8 +582,11 @@ def events_list(request):
             'start_time_has_clock': e.start_time_has_clock,
             'end_time': _to_str(e.end_time),
             'capacity': e.capacity,
+            'created_by': getattr(e, 'created_by', None),
+            'scope_id': getattr(e, 'scope_id', None),
         }
     }, status=201)
+
 
 @csrf_exempt
 def event_detail(request, event_id: int):
@@ -543,8 +607,10 @@ def event_detail(request, event_id: int):
                 'end_time': _to_str(e.end_time),
                 'capacity': e.capacity,
                 'created_by': getattr(e, 'created_by', None),
+                'scope_id': getattr(e, 'scope_id', None),
             }
         }, status=200)
+
 
     if request.method not in ('PATCH', 'DELETE'):
         return HttpResponseBadRequest('invalid method')
@@ -637,7 +703,16 @@ def event_detail(request, event_id: int):
     e.start_time_has_clock = start_has_clock
     e.end_time = new_end
     e.capacity = new_cap
+    new_scope_id = (body.get('scope_id') or '').strip() or e.scope_id
+    e.scope_id = new_scope_id
     e.save()
+
+    try:
+        notify = bool(body.get('notify', False))
+        if notify and new_scope_id:
+            _push_event_created(new_scope_id, e, request_host=request.get_host(), action="updated")
+    except Exception as ex:
+        logger.warning("notify push failed: %s", ex)
 
     return JsonResponse({
         'ok': True,
@@ -649,8 +724,10 @@ def event_detail(request, event_id: int):
             'end_time': _to_str(e.end_time),
             'capacity': e.capacity,
             'created_by': getattr(e, 'created_by', None),
+            'scope_id': getattr(e, 'scope_id', None),
         }
     }, status=200)
+
 
 @csrf_exempt
 def event_participants(request, event_id: int):

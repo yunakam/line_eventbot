@@ -10,6 +10,7 @@
   let currentUserId = "";      // IDトークンのsub
   let gItems = [];             // 直近のイベント一覧キャッシュ
   const REL_LOGIN_FLAG = "didForceReloginOnce"; // 再ログイン一度だけ
+  let lastValidatedGroupId = "";                 // 直近でOKだった groupId を保持
 
   // ==============================
   // 1) ユーティリティ
@@ -305,13 +306,155 @@
     return sameDay ? `${startStr} ~ ${eh}:${emin}` : `${startStr} ~ ${ey}/${em}/${ed} ${eh}:${emin}`;
   };
 
+
+  async function fetchGroupSuggest(keyword = "") {
+    const token = await ensureFreshIdToken();
+
+    if (!token) { forceReloginOnce(false); throw new Error("id_token missing"); }
+
+    const res = await fetch("/api/groups/suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ id_token: token, q: keyword, limit: 20, only_my: false }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) return [];
+    return data.items || [];
+  }
+
+  function renderSuggest(items) {
+    const box = $("#group-suggest");
+    if (!box) return;
+    box.style.display = "block";
+    if (!items.length) {
+      box.innerHTML = `
+        <div class="card muted">
+          イベントが共有できるグループが見つからないよ。<br>
+          まずはイベントボットを共有したいLINEグループに招待してね。
+        </div>`;
+      return;
+    }
+    box.innerHTML = items.map(it => {
+      const name = it.name?.trim() ? it.name : it.id;
+      const pic  = it.pictureUrl?.trim() ? it.pictureUrl : "";
+      return `
+        <div class="card" data-gid="${it.id}" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          ${pic ? `<img src="${pic}" alt="" style="width:28px;height:28px;border-radius:50%;">` : ``}
+          <div style="font-size:14px;">${escapeHtml(name)}</div>
+        </div>`;
+    }).join("");
+  }
+
+  // ===== 共有UIコンポーネント（作成・編集モーダル用） =====
+  class GroupShareSection {
+    constructor(opts = {}) {
+      this.previewEl = $("#group-preview");   // 選択済みプレビュー（アイコン＋名前）
+      this.suggestEl = $("#group-suggest");   // 候補リスト（カード群）
+      this.inputEl   = $("#f-group");         // hidden相当：選択されたgroupIdを保持
+      this.nrowEl    = $("#row-notify");      // 通知行（ラベル＋チェックボックス）
+      this.notifyEl  = $("#f-notify");        // 「イベント作成通知をグループに送る」
+      this._onSuggestClick = this._onSuggestClick.bind(this);
+    }
+
+    // 通知の可否をUIに反映
+    _toggleNotify(enabled) {
+      if (this.nrowEl) this.nrowEl.style.display = enabled ? "" : "none";
+      if (this.notifyEl) {
+        this.notifyEl.disabled = !enabled;
+        if (!enabled) this.notifyEl.checked = false;
+      }
+    }
+
+    // 候補のクリック委譲ハンドラ
+    async _onSuggestClick(ev) {
+      const card = ev.target.closest('.card[data-gid]');
+      if (!card) return;
+      const gid = card.getAttribute('data-gid') || "";
+      if (this.inputEl) this.inputEl.value = gid;
+
+      // 選択を検証→プレビュー描画（既存関数をそのまま使用）
+      try { await validateGroupSelection({ silent: false }); } catch {}
+      if (this.previewEl) this.previewEl.style.display = "block";
+      if (this.suggestEl) this.suggestEl.style.display = "none";
+      this._toggleNotify(true);
+    }
+
+    _mountSuggestHandlers() {
+      if (!this.suggestEl) return;
+      this._unmountSuggestHandlers();
+      this.suggestEl.addEventListener('click', this._onSuggestClick);
+    }
+    _unmountSuggestHandlers() {
+      if (!this.suggestEl) return;
+      this.suggestEl.removeEventListener('click', this._onSuggestClick);
+    }
+
+    // 未共有用：候補を表示（作成時・未共有編集時の初期表示）
+    async showSuggest(keyword = "") {
+      if (this.previewEl) this.previewEl.style.display = "none";
+      if (this.suggestEl) {
+        this.suggestEl.style.display = "block";
+        this.suggestEl.innerHTML = `<div class="card muted">共有できるグループの候補を読み込み中だよ…</div>`;
+      }
+      this._toggleNotify(false);
+      try {
+        const items = await fetchGroupSuggest(keyword);
+        renderSuggest(items);
+        this._mountSuggestHandlers();
+      } catch (e) {
+        if (this.suggestEl) this.suggestEl.innerHTML = `<div class="card muted">候補の読み込みに失敗したよ</div>`;
+      }
+    }
+
+    // 共有済み用：プレビュー表示（編集時、scope_idを保持しているケース）
+    async showPreviewFor(scopeId) {
+      if (this.inputEl) this.inputEl.value = scopeId || "";
+      try { await validateGroupSelection({ silent: true }); } catch {}
+      if (this.previewEl) this.previewEl.style.display = "block";
+      if (this.suggestEl) { this.suggestEl.style.display = "none"; this.suggestEl.innerHTML = ""; }
+      this._toggleNotify(true);
+    }
+
+    // 作成モード初期化
+    async resetForCreate() {
+      if (this.inputEl) this.inputEl.value = "";
+      lastValidatedGroupId = "";
+      await this.showSuggest("");
+    }
+
+
+    // 編集モード初期化（scopeIdがあればプレビュー、なければ候補）
+    async resetForEdit(scopeId) {
+      if (scopeId) {
+        await this.showPreviewFor(scopeId);
+      } else {
+        await this.resetForCreate();
+      }
+    }
+
+    // 保存用値の取り出し
+    getValue() {
+      const scope_id = (this.inputEl?.value || "").trim();
+      const notify   = !!(this.notifyEl && this.notifyEl.checked);
+      return { scope_id, notify };
+    }
+  }
+
+  // シングルトン的に使う
+  const groupShare = new GroupShareSection();
+
+  // ===== 共有UIコンポーネントここまで =====
+
+
   let isEditing = false;
   let editingId = null;
+
 
   const openEditDialog = async (id) => {
     const item = (gItems || []).find(x => Number(x.id) === Number(id));
     if (!item) return;
 
+    // 既存値をフォームに復元
     $("#f-title").value = item.name || "";
     $("#f-date").value  = item.start_time ? isoToLocalYmd(item.start_time) : "";
     $("#f-start").value = (item.start_time && item.start_time_has_clock) ? isoToLocalHhmm(item.start_time) : "";
@@ -321,19 +464,8 @@
     $("#f-duration").value = "";
     $("#f-cap").value = (item.capacity == null ? "" : String(item.capacity));
 
-    // 共有プレビューの復元
-    const gid = (item.scope_id || "").trim();
-    const input = $("#f-group");
-    if (input) input.value = gid;
-
-    if (gid && /^[CR][0-9a-f]{32}$/i.test(gid)) {
-      try { await validateGroupSelection({ silent: true }); } catch {}
-    } else {
-      const gp = $("#group-preview"), rn = $("#row-notify"), fn = $("#f-notify");
-      if (gp) gp.style.display = "none";
-      if (rn) rn.style.display = "none";
-      if (fn) { fn.checked = false; fn.disabled = true; }
-    }
+    // 共通コンポーネントで初期化
+    await groupShare.resetForEdit((item.scope_id || "").trim());
 
     isEditing = true;
     editingId = id;
@@ -361,6 +493,18 @@
     const typed = ($("#f-group")?.value || "").trim();
     const urlGrp = new URLSearchParams(location.search).get("groupId") || "";
     const token = await ensureFreshIdToken();
+
+    // トークン欠落/期限切れは「ログイン更新」扱いで早期リターン
+    if (!token) {
+      const rn = $("#row-notify"), fn = $("#f-notify"), gp = $("#group-preview");
+      if (rn) rn.style.display = "none";
+      if (fn) { fn.checked = false; fn.disabled = true; }
+      if (gp) gp.style.display = "none";
+      if (!silent) alert("ログインの有効期限が切れたみたい。もう一度ログインしてね");
+      forceReloginOnce(true);
+      return { ok: false };
+    }
+
     const pat = /^[CR][0-9a-f]{32}$/i;
 
     // 形式NG
@@ -398,16 +542,27 @@
       if (!silent) alert("ログインの有効期限が切れたみたい。もう一度ログインしてね");
       return { ok: false };
     }
+
     if (!res.ok || !data.ok) {
       const rn = $("#row-notify"), fn = $("#f-notify"), gp = $("#group-preview");
       if (rn) rn.style.display = "none";
       if (fn) { fn.checked = false; fn.disabled = true; }
       if (gp) gp.style.display = "none";
-      if (!silent) alert("不正なIDだよ");
+
+      // サーバ由来の“パラメータ不足/トークン系”はログイン更新を促す
+      const reason = String(data?.reason || "");
+      if (res.status === 401 || /missing_params/i.test(reason) || /id[_ ]?token/i.test(reason)) {
+        if (!silent) alert("ログインの有効期限が切れたみたい。もう一度ログインしてね");
+        forceReloginOnce(true);
+      } else {
+        if (!silent) alert("不正なIDだよ");
+      }
       return { ok: false };
     }
 
     // 成功: プレビュー/通知UIを解放
+    lastValidatedGroupId = (data.groupId || candidate);
+
     const gp = $("#group-preview"), gi = $("#group-icon"), gn = $("#group-name");
     if (gp && gi && gn) {
       const name = data.group?.name || candidate;
@@ -441,24 +596,42 @@
     const token = await ensureFreshIdToken();
     if (!token) { if (forceReloginOnce(true)) return; return; }
 
-    // 共有先決定
     const urlHasGroup = /[?&]groupId=/.test(location.search);
-    const inputGroup  = ($("#f-group")?.value || "").trim();
-    const notifyChecked = !!$("#f-notify")?.checked;
+    const { scope_id: inputGroup, notify: notifyChecked } = groupShare.getValue();
 
     let chosenScopeId = scopeId || ""; // 既定は現在のスコープ
     let notify = false;
 
     // 通知ONで共有先未選択は不可
-    if (notifyChecked && !urlHasGroup && !inputGroup) { alert("共有するグループを選んでね"); return; }
+    if (notifyChecked && !urlHasGroup && !inputGroup) {
+      alert("共有するグループを選んでね");
+      return;
+    }
 
-    // groupIdがURL/入力にある or 通知ON → validate必須
-    if (urlHasGroup || inputGroup || notifyChecked) {
+    // 共有先の最終決定
+    if (urlHasGroup) {
+      // グループから起動している場合は必ず検証
       const v = await validateGroupSelection({ silent: false });
       if (!v?.ok) return;
       chosenScopeId = v.groupId;
       notify = notifyChecked;
+    } else if (inputGroup) {
+      // 直前に同じIDで検証済み & プレビューが出ているなら再検証を省略
+      const previewVisible = ($("#group-preview") && $("#group-preview").style.display !== "none");
+      if (previewVisible && lastValidatedGroupId && lastValidatedGroupId === inputGroup) {
+        chosenScopeId = inputGroup;
+        notify = notifyChecked;
+      } else {
+        const v = await validateGroupSelection({ silent: false });
+        if (!v?.ok) return;
+        chosenScopeId = v.groupId;
+        notify = notifyChecked;
+      }
+    } else if (notifyChecked) {
+      alert("共有するグループを選んでね");
+      return;
     }
+
 
     // 編集時: 共有UI未操作なら元のscope_idを維持
     if (isEditing && !(urlHasGroup || inputGroup || notifyChecked)) {
@@ -575,12 +748,42 @@
       }
     }
 
-    // 作成モーダル
-    $("#btn-create").addEventListener("click", async () => {
-      showDialog();
-      const items = await fetchGroupSuggest(""); // 候補表示
-      renderSuggest(items);
+    // ========== 作成：ボタンをクリックでモーダルを開く ==========
+    $("#btn-create")?.addEventListener("click", async () => {
+      clearForm();               // 入力クリア（タイトル/日付/時間/定員・エラー非表示）
+      showDialog("create");      // 先に開く（体感を速く）
+      await groupShare.resetForCreate(); // 共有UI：候補を表示、通知はOFF
     });
+
+    // ========== 編集：イベント委譲でボタンを拾う（動的カードでも効く） ==========
+    document.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest(".js-edit"); // 例：<button class="js-edit" data-id="123">
+      if (!btn) return;
+
+      const id = Number(btn.dataset.id || btn.getAttribute("data-id"));
+      if (!id) return;
+
+      const item = (gItems || []).find(x => Number(x.id) === id);
+      if (!item) { alert("不正なIDだよ"); return; }
+
+      // 既存値をフォームへ反映
+      $("#f-title").value = item.name || "";
+      $("#f-date").value  = item.start_time ? isoToLocalYmd(item.start_time) : "";
+      $("#f-start").value = (item.start_time && item.start_time_has_clock) ? isoToLocalHhmm(item.start_time) : "";
+      document.querySelector('input[name="endmode"][value="time"]').checked = true;
+      $("#f-end").value = item.end_time ? isoToLocalHhmm(item.end_time) : "";
+      $("#f-duration").value = "";
+      $("#f-cap").value = (item.capacity == null ? "" : String(item.capacity));
+
+      // 共有UI：scope_id があればプレビュー表示、なければ候補表示
+      showDialog("edit"); // 先に開く
+      await groupShare.resetForEdit((item.scope_id || "").trim());
+
+      // 編集フラグの管理（あなたの既存ロジックに合わせて）
+      isEditing = true;
+      editingId = id;
+    });
+
     $("#btn-cancel").addEventListener("click", hideDialog);
     $("#create-backdrop").addEventListener("click", hideDialog);
     $("#btn-save").addEventListener("click", handleSave);
@@ -595,60 +798,12 @@
       grp.addEventListener('input', () => { clearTimeout(t); t=setTimeout(run, 400); });
     }
 
-    // 候補取得/描画
-    async function fetchGroupSuggest(keyword = "") {
-      const token = await ensureFreshIdToken();
-      const res = await fetch("/api/groups/suggest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Accept": "application/json" },
-        body: JSON.stringify({ id_token: token, q: keyword, limit: 20, only_my: false }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) return [];
-      return data.items || [];
-    }
-    function renderSuggest(items) {
-      const box = $("#group-suggest");
-      if (!box) return;
-      box.style.display = "block";
-      if (!items.length) {
-        box.innerHTML = `
-          <div class="card muted">
-            イベントが共有できるグループが見つからないよ。<br>
-            まずはイベントボットを共有したいLINEグループに招待してね。
-          </div>`;
-        return;
-      }
-      box.innerHTML = items.map(it => {
-        const name = it.name?.trim() ? it.name : it.id;
-        const pic  = it.pictureUrl?.trim() ? it.pictureUrl : "";
-        return `
-          <div class="card" data-gid="${it.id}" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-            ${pic ? `<img src="${pic}" alt="" style="width:28px;height:28px;border-radius:50%;">` : ``}
-            <div style="font-size:14px;">${escapeHtml(name)}</div>
-          </div>`;
-      }).join("");
-    }
-
-    // 候補クリック→入力→validate
-    $("#group-suggest")?.addEventListener("click", async (ev) => {
-      const card = ev.target.closest(".card[data-gid]");
-      if (!card) return;
-      const gid = card.dataset.gid || "";
-      const input = $("#f-group");
-      if (input) input.value = gid;
-      // サジェストを畳む
-      const box = $("#group-suggest");
-      if (box) { box.style.display = "none"; box.innerHTML = ""; }
-      await validateGroupSelection({ silent: false });
-    });
-
     // 「候補を表示」
     $("#btn-suggest")?.addEventListener("click", async () => {
       const kw = ($("#f-group")?.value || "").trim();
-      const items = await fetchGroupSuggest(kw);
-      renderSuggest(items);
+      await groupShare.showSuggest(kw);
     });
+
 
     // URLにgroupIdがあれば自動validate（グループから起動）
     if (/[?&]groupId=/.test(location.search)) {
