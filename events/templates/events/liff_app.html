@@ -4,6 +4,11 @@
   <meta charset="utf-8">
   <title>イベント管理</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 端末の配色に追従（CSS側で未定義時の初期ヒント） -->
+  <meta name="color-scheme" content="light dark">
+  <!-- LINE公式スクリプトへの事前接続ヒント（任意最適化） -->
+  <link rel="preconnect" href="https://static.line-scdn.net" crossorigin>
+  <!-- CSS（I/F互換のためパス/バージョンは現状維持） -->
   <link rel="stylesheet" href="/static/events/liff.css?v=6">
 </head>
 
@@ -13,13 +18,18 @@
   <!-- 作成ボタン（押下で作成フローへ） -->
   <button id="btn-create" data-href="/liff/create">イベント作成</button>
 
-  <!-- 一覧描画先（JSがここに差し込む） -->
+  <!-- 一覧（JSで差し込み） -->
   <div id="event-list" aria-live="polite">
     <p class="muted">読み込み中…</p>
   </div>
 
-  
-  <!-- イベント作成モーダル -->
+  <noscript>
+    <p class="muted">JavaScriptを有効にしてね</p>
+  </noscript>
+
+  <!-- =========================
+       イベント作成モーダル
+       ========================= -->
   <div id="create-backdrop" class="backdrop" hidden></div>
 
   <section id="create-dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-title" hidden>
@@ -49,10 +59,9 @@
           </label>
         </div>
 
-        <!-- （左）終了時刻/所要時間ラジオ（右）選択された方の入力 -->
+        <!-- 終了入力（左：モード/右：入力） -->
         <div class="row">
           <fieldset class="endpicker">
-            <!-- 左カラム：ラジオ -->
             <div class="endmode-switch">
               <label class="radio-pill">
                 <input type="radio" name="endmode" value="time" checked> 終了時刻
@@ -62,7 +71,6 @@
               </label>
             </div>
 
-            <!-- 右カラム：選択された入力欄（:has で片方のみ表示） -->
             <div class="end-input">
               <label class="subrow when-time" id="row-endtime">
                 <span>終了時刻</span>
@@ -76,14 +84,11 @@
           </fieldset>
         </div>
 
-        <!-- 定員 -->
+        <!-- 定員（任意） -->
         <label class="row">
           <span>定員</span>
           <input id="f-cap" name="capacity" type="number" inputmode="numeric" min="1" step="1" placeholder="数字を入力してね">
         </label>
-
-
-
 
         <!-- 共有先グループ -->
         <label class="row" id="row-group-to-share">
@@ -97,7 +102,7 @@
           </div>
         </label>
 
-        <!-- 通知 -->
+        <!-- 通知（検証OK時に活性化） -->
         <label id="row-notify" class="row" style="display:none;">
           <span>通知</span>
           <input id="f-notify" name="notify" type="checkbox" disabled>
@@ -109,15 +114,16 @@
         <button type="button" id="btn-cancel" class="btn-secondary">やめる</button>
         <button type="button" id="btn-save" class="btn-primary">保存</button>
       </footer>
-
     </div>
   </section>
 
+  <!-- サーバから渡すLIFF情報（I/F互換のまま） -->
   <script>
     window.LIFF_ID = "{{ LIFF_ID|default_if_none:''|escapejs }}";
     window.LIFF_REDIRECT_ABS = "{{ LIFF_REDIRECT_ABS|escapejs }}";
   </script>
-  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-  <script src="/static/events/liff.js?v=6"></script>
+  <!-- 読み込み順：SDK → アプリ本体。DOMContentLoadedで初期化するためdeferでOK -->
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js" defer></script>
+  <script src="/static/events/liff.js?v=6" defer></script>
 </body>
 </html>

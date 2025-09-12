@@ -31,6 +31,9 @@ htmlcov/
 # .env
 .env
 
+# Internal
+internal/
+
 # Others
 line_eventbot.code-workspace
 todo.md

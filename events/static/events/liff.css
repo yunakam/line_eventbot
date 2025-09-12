@@ -1,47 +1,73 @@
-/* ========== ベース ========== */
-[hidden]{ display:none !important; } /* hiddenを常に優先 */
+/* =========================================
+ * LIFF イベント管理 UI スタイル
+ * ねらい: セクション順を統一し、最低限のコメントで保守しやすくする
+ * 依存: liff.js が使用するクラス構成を変更しない（I/F互換）
+ * ======================================= */
+
+
+/* ========== 0) ベース / リセット ========== */
+[hidden]{ display:none !important; } /* hidden属性は常に優先 */
+html,body{ margin:0; padding:0; }
 body{
   font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans JP,sans-serif;
   margin:24px;
 }
 h1{ font-size:28px; margin:0 0 16px; }
-#btn-create{
-  appearance:none; border:0; border-radius:9999px; padding:10px 16px;
-  background:#06c755; color:#fff; cursor:pointer;
-}
-
-/* 一覧カード */
-#event-list{
-  margin-top:24px; display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
-  gap:12px;
-}
-.card{ border:1px solid #eee; border-radius:12px; padding:12px 14px; margin:0; }
-.card h3{ margin:0 0 4px; font-size:16px; }
-.card p{ margin:0; font-size:14px; color:#555; }
 .muted{ color:#888; font-size:13px; }
 
-.card .actions{ margin-top:8px; display:flex; gap:10px; justify-content:flex-end; }
+
+/* ========== 1) ボタン群（汎用） ========== */
+button{ font:inherit; cursor:pointer; }
+
+#btn-create{
+  appearance:none; border:0; border-radius:9999px; padding:10px 16px;
+  background:#06c755; color:#fff;
+}
+
 .btn-link{
   appearance:none; background:transparent; border:0; padding:0;
-  font-size:13px; color:#06c755; cursor:pointer;
+  font-size:13px; color:#06c755;
 }
 .btn-link.dangerous{ color:#d22; }
 
+.btn-primary{
+  background:#06c755; color:#fff; border:0; padding:8px 14px; border-radius:9999px; font-size:12px;
+}
+.btn-secondary{
+  background:#f2f2f2; color:#333; border:0; padding:8px 14px; border-radius:9999px; font-size:12px;
+}
 .btn-outline{
   appearance:none; background:#fff; border:1px solid #06c755; color:#06c755;
-  padding:6px 10px; border-radius:9999px; font-size:12px; cursor:pointer;
+  padding:6px 10px; border-radius:9999px; font-size:12px;
 }
 .btn-outline:hover{ background:#f6fff8; }
 .btn-outline:focus-visible{ outline:3px solid rgba(6,199,85,.25); outline-offset:2px; }
 .btn-outline.dangerous{ border-color:#d22; color:#d22; }
 .btn-outline.dangerous:hover{ background:#fff6f6; }
 
-.btn-primary{ background:#06c755; color:#fff; border:0; padding:8px 14px; border-radius:9999px; }
-.btn-secondary{ background:#f2f2f2; color:#333; border:0; padding:8px 14px; border-radius:9999px; }
 
-/* ========== モーダル ========== */
-.backdrop{ position:fixed; inset:0; background:rgba(0,0,0,.35); backdrop-filter:blur(1px); z-index:999; }
+/* ========== 2) イベント一覧カード（グリッド） ========== */
+#event-list{
+  margin-top:24px; display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); /* 1カードの最小幅: 200px */
+  gap:12px;
+}
+.card{
+  display:block;
+  border:1px solid #eee; border-radius:12px;
+  padding:12px; margin:8px 0;
+  min-width:200px;            /* ← 最小幅のみを担保（列数はauto-fitに任せる） */
+  max-width:100%;
+}
+.card h3{ margin:0 0 4px; font-size:16px; }
+.card p{ margin:0; font-size:14px; color:#555; }
+.card .actions{ margin-top:8px; display:flex; gap:10px; justify-content:flex-end; }
+
+
+/* ========== 3) モーダル（作成/編集） ========== */
+.backdrop{
+  position:fixed; inset:0; background:rgba(0,0,0,.35); backdrop-filter:blur(1px); z-index:999;
+}
 .dialog{ position:fixed; inset:0; display:grid; place-items:center; z-index:1000; }
 .dialog[hidden], .backdrop[hidden]{ display:none; }
 
@@ -52,39 +78,32 @@ h1{ font-size:28px; margin:0 0 16px; }
 .dialog .dlg-header{ padding:14px 16px 6px; background:transparent; }
 .dialog .dlg-header h2{ margin:0; }
 .dialog .dlg-body{ padding:12px 16px; background:transparent; padding-top:6px; }
-.dialog .dlg-footer{ display:flex; gap:8px; justify-content:end; padding:10px 16px; background:transparent; }
+.dialog .dlg-footer{
+  display:flex; gap:8px; justify-content:end; padding:10px 16px; background:transparent;
+}
 
-/* ========== フォームレイアウト ========== */
-/* 1カラム行（ラベル→入力） */
-.row{ display:grid; gap:6px; margin:10px 0; }
 
-/* 2カラム行（スマホで縦積みへフォールバック） */
+/* ========== 4) フォームレイアウト共通 ========== */
+.row{ display:grid; gap:6px; margin:10px 0; } /* 1カラム行 */
 .row2{
   display:grid; grid-template-columns:1fr 1fr;
-  gap:10px; margin:6px 0 10px;
+  gap:10px; margin:6px 0 10px;                 /* 2カラム行（スマホでは縦積み） */
 }
 .row2.align-top{ align-items:start; }
-
-/* 必要時の4カラム行（未使用なら削除可） */
 .row4{
   display:grid; grid-template-columns:repeat(4,minmax(140px,1fr));
   gap:10px; margin:6px 0 10px;
 }
-
-/* ラベル見出しの統一（タイトルと同一スタイル） */
 .row span,
 .row2 label>span,
 .row4 label>span{ font-size:13px; color:#444; }
 
-/* サブ行（横並びセル内の縦積み） */
-.subrow{ display:grid; gap:6px; }
+.subrow{ display:grid; gap:6px; }              /* ラベル→入力の縦積み */
 
-/* エラー表示 */
 .err{ color:#D22; font-size:12px; line-height:1.4; }
 .row .err{ margin-top:-2px; }
 
-/* ========== 入力コンポーネント ========== */
-/* 主要入力の見た目を統一 */
+/* 入力コアコンポーネント */
 input[type="text"],
 input[type="date"],
 input[type="time"],
@@ -93,130 +112,86 @@ input[type="number"]{
   border:1px solid #ddd; border-radius:10px;
 }
 
-/* ラジオ（終了時刻/所要時間） */
+
+/* ========== 5) 終了入力 UI（:has() 切替） ========== */
+/* 左=ラジオ群, 右=入力欄（選択中のみ表示） */
+.endpicker{
+  display:grid; grid-template-columns:auto 1fr;
+  column-gap:10px; row-gap:6px; align-items:start;
+  border:0; padding:0; margin:0;
+}
 .endmode-switch{
-  display:flex; gap:8px; align-items:center;
-  padding-bottom:2px; /* モバイルでは下余白を別メディアクエリで付与 */
+  display:flex; flex-direction:column; gap:6px; align-items:flex-start;
+  padding-bottom:0; margin-right:20px;
 }
 .radio-pill{ display:inline-flex; align-items:center; gap:6px; font-size:13px; color:#444; }
 .endmode-switch input[type="radio"]{ transform:translateY(0.5px); }
 
-/* ========== 共有グループ（プレビュー/候補） ========== */
-/* “共有するグループ” 行では子を伸ばさず左寄せ */
-#row-group-to-share{ justify-items:start; }
+.endpicker .end-input{ display:grid; }
+.endpicker .when-time{ display:grid; }
+.endpicker .when-duration{ display:none; }
 
-/* ピルは内容幅にフィット（Grid 子でも伸びない） */
+/* duration選択時に切替 */
+.endpicker:has(input[name="endmode"][value="duration"]:checked) .when-time{ display:none; }
+.endpicker:has(input[name="endmode"][value="duration"]:checked) .when-duration{ display:grid; }
+
+
+/* ========== 6) 共有グループ（プレビュー/サジェスト） ========== */
+#row-group-to-share{ justify-items:start; }             /* 行全体を左寄せ */
 .sg-preview{
   display:inline-flex; align-items:center; gap:8px;
   padding:6px 10px; border:1px solid #ddd; border-radius:9999px; background:#fff;
   width:max-content; max-width:100%; justify-self:start;
 }
 .sg-preview img{ width:24px; height:24px; border-radius:50%; }
-.truncate{
-  display:inline-block; max-width:26ch; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-}
+.truncate{ display:inline-block; max-width:26ch; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
-/* 既存のsg-pill用（必要に応じて使用） */
 .sg-pill img{ width:24px; height:24px; border-radius:50%; }
 .sg-pill .name{ font-size:14px; }
 .sg-pill .clear{ margin-left:8px; font-size:12px; color:#888; cursor:pointer; }
 
-/* 候補リストは列方向、各カードは内容幅で縮む */
 #group-suggest{ display:flex; flex-direction:column; gap:8px; align-items:flex-start; }
 #group-suggest .card{ display:inline-flex; padding:6px 10px; border-radius:10px; }
 
-/* ========== 終了入力（CSS :has() で片方のみ表示） ========== */
-/* 2カラム: 左=ラジオ／右=入力（選択されている方のみ） */
-.endpicker{
-  display: grid;
-  grid-template-columns: auto 1fr; /* 左=ラジオ群, 右=入力欄 */
-  column-gap: 10px;
-  row-gap: 6px;
-  align-items: start;   /* 上揃え（縦列ラジオと見出しのラインを揃える） */
-  border: 0; padding: 0; margin: 0;
+
+/* ========== 7) 参加者リスト ========== */
+.att-box{
+  margin-top:8px; padding:10px 12px; background:#fafafa;
+  border:1px solid #eee; border-radius:10px;
+}
+.att-box h4{ font-size:13px; margin:0 0 6px; color:#444; }
+.att-box ul{ margin:0; padding-left:18px; }
+.att-box li{ font-size:13px; color:#555; line-height:1.6; }
+.att-box .muted{ color:#777; }
+.att-box .error{ color:#c03; }
+
+/* アイコン下に名前（グリッド） */
+.att-grid{
+  list-style:none; margin:0; padding:0;
+  display:grid; grid-template-columns:repeat(auto-fit, minmax(72px,1fr));
+  gap:10px;
+}
+.att-cell{
+  display:grid; justify-items:start; align-items:start; row-gap:6px;
+}
+.att-avatar{
+  width:48px; height:48px; border-radius:50%; object-fit:cover;
+  background:#e9e9e9; display:inline-block;
+}
+.att-avatar.placeholder{ background:#e9e9e9; }
+.att-name{
+  font-size:12px; color:#333; text-align:center; line-height:1.2;
+  word-break:break-all; /* 長い名前の折返し */
 }
 
-/* 左カラム：ラジオを縦列にする（常時） */
-.endpicker .endmode-switch{
-  display: flex;
-  flex-direction: column;  /* ← これが常時効くように、メディアクエリ外で宣言 */
-  gap: 6px;                 /* ラジオ同士の縦余白 */
-  align-items: flex-start;
-  padding-bottom: 0;
-  margin-right: 20px;
+/* リスト型（未使用時は保持のみ） */
+.att-list{ list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+.att-item{ display:grid; grid-template-columns:28px 1fr; column-gap:8px; align-items:center; }
+.att-meta{ display:grid; }
+
+
+/* ========== 8) レスポンシブ ========== */
+@media (max-width:480px){
+  .row2{ grid-template-columns:1fr; }     /* 日付+開始時刻 → 縦積み */
+  .endpicker{ grid-template-columns:1fr; } /* 終了ラジオの下に入力欄を縦積み */
 }
-
-/* 右カラムの器（中に when-time / when-duration のどちらかだけを出す） */
-.endpicker .end-input{ display: grid; }
-
-/* デフォルトは「時間」を表示、duration は隠す */
-.endpicker .when-time{ display: grid; }
-.endpicker .when-duration{ display: none; }
-
-/* duration が選ばれたら切替（方式A: CSSのみ） */
-.endpicker:has(input[name="endmode"][value="duration"]:checked) .when-time{ display: none; }
-.endpicker:has(input[name="endmode"][value="duration"]:checked) .when-duration{ display: grid; }
-
-/* ========== レスポンシブ ========== */
-@media (max-width: 480px){
-  /* 日付+開始時刻は縦積みに */
-  .row2{ grid-template-columns: 1fr; }
-  /* 終了ラジオ→下に入力欄（縦積み） */
-  .endpicker{ grid-template-columns: 1fr; }
-}
-
-
-/* 参加者リスト表示 */
-.att-box {
-  margin-top: 8px;
-  padding: 10px 12px;
-  background: #fafafa;
-  border: 1px solid #eee;
-  border-radius: 10px;
-}
-.att-box h4 { font-size: 13px; margin: 0 0 6px; color: #444; }
-.att-box ul { margin: 0; padding-left: 18px; }
-.att-box li { font-size: 13px; color: #555; line-height: 1.6; }
-.att-box .muted { color: #777; }
-.att-box .error { color: #c03; }
-
-/* 参加者：アイコン下に名前だけ（グリッド表示） */
-.att-grid {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
-  gap: 10px;
-}
-.att-cell {
-  display: grid;
-  justify-items: start;
-  align-items: start;
-  row-gap: 6px;
-}
-.att-avatar {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  object-fit: cover;
-  background: #e9e9e9;
-  display: inline-block;
-}
-.att-avatar.placeholder { background: #e9e9e9; }
-.att-name {
-  font-size: 12px;
-  color: #333;
-  text-align: center;
-  line-height: 1.2;
-  /* 長い名前の折返し対策（任意）*/
-  word-break: break-all;
-}
-
-/* 参加者アイテム */
-.att-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.att-item { display: grid; grid-template-columns: 28px 1fr; column-gap: 8px; align-items: center; }
-.att-avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: #e9e9e9; display: inline-block; }
-.att-avatar.placeholder { background: #e9e9e9; }
-.att-meta { display: grid; }
-.att-name { font-size: 13px; color: #333; line-height: 1.2; }
