@@ -132,12 +132,31 @@
     return true;
   };
 
+  // IDトークンをできるだけ静かに取り直す
   const ensureFreshIdToken = async () => {
+    // 現在の値を確認
     gIdToken = liff.getIDToken() || "";
-    if (!gIdToken) return "";
-    if (isTokenStale()) return "";
-    return gIdToken;
+    if (gIdToken && !isTokenStale()) return gIdToken;
+
+    // 1. ソフト更新: 再初期化（isLoggedIn=trueならリダイレクトせず復帰する）
+    try {
+      const liffId = (window.LIFF_ID || "").trim();
+      if (liffId) {
+        const ok = await initLiffAndLogin(liffId);
+        if (ok) {
+          gIdToken = liff.getIDToken() || "";
+          if (gIdToken && !isTokenStale()) return gIdToken;
+        }
+      }
+    } catch (e) {
+      // no-op（次の強制ログインに委ねる）
+    }
+
+    // 2. 最終手段: 強制ログイン（無限ループ抑止つき）
+    forceReloginOnce(false);
+    return "";
   };
+
 
   // 無限ループを避けつつ再ログイン誘導
   const forceReloginOnce = (withDraft = false) => {
@@ -679,7 +698,15 @@
         : await api.fetchEvents();
 
       const items = data?.items || [];
-      if (!items.length) { listEl.innerHTML = `<p class="muted">イベントはまだないよ</p>`; return; }
+
+      // 1:1（ユーザーIDスコープ）の時に文言を表示
+      const isMyList = !!(scopeId && /^U/.test(scopeId)); 
+      if (!items.length) {
+        listEl.innerHTML = isMyList
+          ? `<p class="muted">作成したイベントはまだないよ</p>`
+          : ``;
+        return;
+      }
       gItems = items;
 
       // 自分の参加状態をまとめて取得
@@ -820,6 +847,9 @@
       }
       const ok = await initLiffAndLogin(liffId);
       if (ok) {
+        // 正常復帰時はフラグをクリア
+        sessionStorage.removeItem(REL_LOGIN_FLAG);
+
         // scope未指定ならsubで補完（1:1）
         if (!scopeId && currentUserId) {
           scopeId = currentUserId;

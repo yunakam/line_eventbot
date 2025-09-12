@@ -80,7 +80,8 @@ def _is_home_menu_trigger(text: str) -> bool:
     if "🤖" in text:
         return True
     norm = unicodedata.normalize("NFKC", text).strip().lower()
-    return norm in ("ボット", "ぼっと", "bot")
+    norm_nospace = norm.replace(" ", "").replace("　", "")
+    return norm_nospace in ("ボット", "ぼっと", "イベントボット", "bot", "eventbot")
 
 def get_line_clients():
     """Messaging APIクライアント（通知用途）を返す。"""
@@ -227,11 +228,11 @@ def handle_text_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="グループのトークで呼び出してね"))
         return
 
-    norm = unicodedata.normalize("NFKC", text).strip()
-    if norm == "イベントボット":
+    if _is_home_menu_trigger(text):
         if getattr(source, "type", "") == "group":
+            # グループ：既存の「グループのイベント一覧」Flexを返す
             gid = getattr(source, "group_id", "")
-            liff_url = build_liff_url_for_source(source_type="group", group_id=gid)
+            liff_url = build_liff_url_for_source(source_type="group", group_id=gid)  # グループ用LIFF URL
             flex_contents = {
                 "type": "bubble",
                 "body": {
@@ -250,17 +251,13 @@ def handle_text_message(event):
             )
             line_bot_api.reply_message(event.reply_token, msg)
         else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="グループのトークで送信してね"))
+            # 1:1：QuickReply「開く」→ “自分が作成したイベント一覧” のLIFFへ
+            liff_url = build_liff_url_for_source(source_type="user", user_id=getattr(source, "user_id", None))
+            # ユーザー向け文言：「開く」をタップすると一覧に遷移する
+            msg = ui.msg_open_liff("『開く』をタップすると作成したイベント一覧が見れるよ", liff_url)
+            line_bot_api.reply_message(event.reply_token, msg)
         return
-    
-    if text in ("イベント", "event", "ｲﾍﾞﾝﾄ"):
-        if source.type == "group":
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="イベントはボットとの1:1チャットで作れるよ"))
-            return
-        liff_url = build_liff_url_for_source(source_type="user", user_id=getattr(source, "user_id", None))
-        msg = ui.msg_open_liff("イベント管理を開くよ。『開く』をタップしてね。", liff_url)
-        line_bot_api.reply_message(event.reply_token, msg)
-        return
+
 
 @handler.add(JoinEvent)
 def handle_join(event):

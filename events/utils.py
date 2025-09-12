@@ -57,10 +57,10 @@ def build_liff_url_for_source(source_type: str, group_id: str | None = None, use
     # 1) 現在のリクエストでHostが設定されていればそれを使う（https固定）
     host = get_request_host()
     if host:
-        base = f"https://{host}/liff"
+        base = f"https://{host}/liff/"
     else:
         # 2) なければ従来通り .env のベースURLを使う
-        base = get_liff_endpoint()
+        base = get_liff_endpoint().rstrip('/') + '/'
 
     params = {}
     if source_type == "group" and group_id:
@@ -70,7 +70,7 @@ def build_liff_url_for_source(source_type: str, group_id: str | None = None, use
     else:
         params = {"src": "unknown"}
 
-    return f"{base.rstrip('/')}?{urlencode(params)}"
+    return f"{base}?{urlencode(params)}"
 
 
 def build_liff_deeplink_for_source(source_type: str, group_id: str | None = None, user_id: str | None = None) -> str:
