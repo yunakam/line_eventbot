@@ -153,7 +153,6 @@ input[type="number"]{
 #group-suggest{ display:flex; flex-direction:column; gap:8px; align-items:flex-start; }
 #group-suggest .card{ display:inline-flex; padding:6px 10px; border-radius:10px; }
 
-
 /* ========== 7) 参加者リスト ========== */
 .att-box{
   margin-top:8px; padding:10px 12px; background:#fafafa;
@@ -161,27 +160,43 @@ input[type="number"]{
 }
 .att-box h4{ font-size:13px; margin:0 0 6px; color:#444; }
 .att-box ul{ margin:0; padding-left:18px; }
+.att-box ul.att-grid{ padding-left:0; }
 .att-box li{ font-size:13px; color:#555; line-height:1.6; }
 .att-box .muted{ color:#777; }
 .att-box .error{ color:#c03; }
 
-/* アイコン下に名前（グリッド） */
+/* 参加者グリッド：固定幅カラムを左に詰める */
 .att-grid{
   list-style:none; margin:0; padding:0;
-  display:grid; grid-template-columns:repeat(auto-fit, minmax(72px,1fr));
+  display:grid;
+  grid-template-columns: repeat(auto-fill, 72px);
+  justify-content: start;
   gap:10px;
 }
+
+/* セル内は縦積み・中身は中央（セル自体の幅は固定72px） */
 .att-cell{
-  display:grid; justify-items:start; align-items:start; row-gap:6px;
+  inline-size:72px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:flex-start;
+  gap:6px;
 }
+
 .att-avatar{
   width:48px; height:48px; border-radius:50%; object-fit:cover;
   background:#e9e9e9; display:inline-block;
 }
 .att-avatar.placeholder{ background:#e9e9e9; }
+
 .att-name{
-  font-size:12px; color:#333; text-align:center; line-height:1.2;
-  word-break:break-all; /* 長い名前の折返し */
+  width:100%;
+  text-align:center;
+  font-size:12px;
+  color:#333;
+  line-height:1.2;
+  word-break:break-all;           /* 長い名前の折返し */
 }
 
 /* リスト型（未使用時は保持のみ） */

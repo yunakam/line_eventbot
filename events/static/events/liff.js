@@ -903,7 +903,8 @@
               ? `<ul class="att-grid">${
                   arr.map(a => {
                     const pic  = String(a.pictureUrl || "").replace(/"/g, "&quot;");
-                    const name = (a.name?.trim()) ? a.name : a.user_id;
+                    const nameRaw = typeof a.name === "string" ? a.name : "";
+                    const name = nameRaw.trim() ? nameRaw.trim() : a.user_id;  // ← 値もtrimして使う
                     return `
                       <li class="att-cell">
                         ${pic ? `<img class="att-avatar" src="${pic}" alt="">`
