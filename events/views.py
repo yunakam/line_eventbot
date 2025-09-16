@@ -419,16 +419,23 @@ def events_mine(request):
                   Q(created_by="", scope_id=user_id))
           .order_by('-start_time')[:200])
 
-    items = [{
-        'id': e.id,
-        'name': e.name,
-        'start_time': _to_str(e.start_time),
-        'start_time_has_clock': e.start_time_has_clock,
-        'end_time': _to_str(e.end_time),
-        'capacity': e.capacity,
-        'scope_id': e.scope_id,
-        'created_by': user_id,
-    } for e in qs]
+    items = []
+    for e in qs:
+        confirmed = e.participants.filter(is_waiting=False).count()
+        waiting   = e.participants.filter(is_waiting=True).count()
+        items.append({
+            'id': e.id,
+            'name': e.name,
+            'start_time': _to_str(e.start_time),
+            'start_time_has_clock': e.start_time_has_clock,
+            'end_time': _to_str(e.end_time),
+            'capacity': e.capacity,
+            'scope_id': e.scope_id,
+            'created_by': user_id,
+            'confirmed_count': confirmed,
+            'waitlist_count': waiting,
+        })
+
     return JsonResponse({'ok': True, 'items': items}, status=200)
 
 @csrf_exempt
@@ -472,6 +479,14 @@ def events_list(request):
                 obj['created_by'] = getattr(e, 'created_by', None)
             if 'scope_id' in fields:
                 obj['scope_id'] = getattr(e, 'scope_id', None)
+            
+            # 参加者件数
+            try:
+                obj['confirmed_count'] = e.participants.filter(is_waiting=False).count()
+                obj['waitlist_count']  = e.participants.filter(is_waiting=True).count()
+            except Exception:
+                pass
+            
             items.append(obj)
         return JsonResponse({'ok': True, 'items': items}, status=200)
 

@@ -730,9 +730,14 @@
           ? `<button class="btn-outline" data-act="rsvp-cancel" data-id="${e.id}">キャンセル</button>`
           : `<button class="btn-primary" data-act="rsvp-join" data-id="${e.id}">参加</button>`;
 
+        const _cntRaw = (e.confirmed_count !== undefined && e.confirmed_count !== null) ? Number(e.confirmed_count) : NaN;
+        const memberLabel = Number.isFinite(_cntRaw)
+          ? `参加者 ${_cntRaw}`
+          : "参加者";
+
         const actionsHtml = isCreator
           ? `<div class="actions">
-              <button class="btn-secondary" data-act="members" data-id="${e.id}">参加者</button>
+              <button class="btn-secondary" data-act="members" data-id="${e.id}">${memberLabel}</button>
               <button class="btn-outline" data-act="edit" data-id="${e.id}">編集</button>
               <button class="btn-outline dangerous" data-act="delete" data-id="${e.id}" data-name="${escapeHtml(name)}">削除</button>
             </div>
